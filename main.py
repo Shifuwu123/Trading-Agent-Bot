@@ -5,7 +5,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from tradingbot.core.bot import TradingBot
-from tradingbot.utils.telegram_listener import TelegramListener
+from tradingbot.interfaces.telegram.telegram_listener import TelegramListener
 from tradingbot.utils.logger import log
 
 import argparse
