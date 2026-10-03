@@ -177,7 +177,7 @@ class TradingBot:
     def start(self):
         log.info("Starting TradingBot Scheduler...")
         try:
-            self.notifier.send_message("🚀 *TradingBot iniciado exitosamente!*\n⚙️ El bot ha arrancado y está operando. Evaluando el mercado...\nUsa /status para ver comandos.")
+            self.notifier.send_message("🚀 <b>TradingBot iniciado exitosamente!</b>\n⚙️ El bot ha arrancado y está operando. Evaluando el mercado...\nUsa /status para ver comandos.")
             
             # Iniciar el scheduler primero
             self.scheduler.add_job(self._run_cycle_sync, 'interval', minutes=1)

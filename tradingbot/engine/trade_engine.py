@@ -39,6 +39,7 @@ class TradeEngine:
 
             signal = self.strategy.generate_signal(df)
             current_price = float(df['close'].iloc[-1])
+            self.portfolio_manager.update_asset_price(symbol, current_price)
             
             close_result = await self.manage_open_trades(symbol, current_price, signal, order_executor, total_capital)
             if close_result:

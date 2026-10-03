@@ -181,6 +181,35 @@ class PortfolioManager:
                  portfolio.avg_price = Decimal("0.0")
                  
         portfolio.current_price = price_dec
+        if portfolio.quantity > 0:
+            portfolio.unrealized_pnl = (portfolio.current_price - portfolio.avg_price) * portfolio.quantity
+        else:
+            portfolio.unrealized_pnl = Decimal("0.0")
+
+    def update_asset_price(self, asset: str, current_price: float, is_paper: bool = True):
+        """
+        Updates the current market price and unrealized PnL for an asset in the portfolio.
+        """
+        session = DatabaseSession.get_session()
+        try:
+            base_asset = asset.split('/')[0] if '/' in asset else asset
+            portfolio = session.query(Portfolio).filter(
+                Portfolio.asset == base_asset, 
+                Portfolio.is_paper == is_paper
+            ).first()
+            if portfolio:
+                price_dec = Decimal(str(current_price))
+                portfolio.current_price = price_dec
+                if portfolio.quantity > 0:
+                    portfolio.unrealized_pnl = (price_dec - portfolio.avg_price) * portfolio.quantity
+                else:
+                    portfolio.unrealized_pnl = Decimal("0.0")
+                session.commit()
+        except Exception as e:
+            session.rollback()
+            log.warning(f"Error updating asset price for {asset}: {e}")
+        finally:
+            session.close()
 
     def _update_virtual_wallet(self, session: Session, side: str, amount: float, price: float):
         """
@@ -311,7 +340,7 @@ class PortfolioManager:
 
     def get_cashflow_summary(self) -> dict:
         """
-        Calculates total investments, expenses, trading PnL, and ROI.
+        Calculates total investments, expenses, trading PnL (realized + unrealized), and ROI.
         """
         session = DatabaseSession.get_session()
         try:
@@ -333,7 +362,22 @@ class PortfolioManager:
                 Trade.is_paper == True
             ).all()
             
-            total_pnl = sum(float(t.pnl) if t.pnl else 0.0 for t in trades)
+            realized_pnl = sum(float(t.pnl) if t.pnl else 0.0 for t in trades)
+
+            # Active holdings unrealized PnL
+            portfolio_items = session.query(Portfolio).filter(
+                Portfolio.is_paper == True,
+                Portfolio.quantity > 0
+            ).all()
+
+            unrealized_pnl = 0.0
+            for p in portfolio_items:
+                if p.unrealized_pnl is not None:
+                    unrealized_pnl += float(p.unrealized_pnl)
+                elif p.quantity and p.current_price and p.avg_price:
+                    unrealized_pnl += float((p.current_price - p.avg_price) * p.quantity)
+
+            total_pnl = realized_pnl + unrealized_pnl
             
             wallet = session.query(DigitalWallet).filter(
                 DigitalWallet.telegram_id == telegram_id,
@@ -343,9 +387,7 @@ class PortfolioManager:
             current_balance = float(wallet.balance_usd) if wallet else 10000.0
             
             # ROI is calculated based on net deposits minus expenses (actual capital invested)
-            # Or simply: Total PnL / (Initial 10000 + Deposits - Expenses)
-            # We assume a base 10000 if no deposits were made, or we just count it.
-            # Let's count 10000 as implicit initial deposit.
+            # Total PnL includes both realized profits and current open positions' unrealized PnL
             base_capital = 10000.0 + total_deposits - total_expenses
             roi_pct = (total_pnl / base_capital) * 100 if base_capital > 0 else 0.0
             
@@ -353,6 +395,8 @@ class PortfolioManager:
                 "deposits": total_deposits,
                 "expenses": total_expenses,
                 "withdrawals": total_withdrawals,
+                "realized_pnl": realized_pnl,
+                "unrealized_pnl": unrealized_pnl,
                 "pnl": total_pnl,
                 "balance": current_balance,
                 "roi_pct": roi_pct
@@ -371,6 +415,15 @@ class PortfolioManager:
                 Portfolio.quantity > 0
             ).all()
             
-            return [{"asset": p.asset, "quantity": float(p.quantity), "avg_price": float(p.avg_price), "current_price": float(p.current_price)} for p in portfolio]
+            return [
+                {
+                    "asset": p.asset,
+                    "quantity": float(p.quantity),
+                    "avg_price": float(p.avg_price),
+                    "current_price": float(p.current_price),
+                    "unrealized_pnl": float(p.unrealized_pnl) if p.unrealized_pnl is not None else float((p.current_price - p.avg_price) * p.quantity)
+                }
+                for p in portfolio
+            ]
         finally:
             session.close()
