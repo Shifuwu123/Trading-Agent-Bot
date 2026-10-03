@@ -24,7 +24,7 @@ class TelegramListener:
         state = "Pausado ⏸️" if self.bot_instance.paused else "Corriendo ▶️"
         capital_usd = await self.bot_instance.get_current_capital()
         capital_clp = self.bot_instance.clp_converter.convert_usd_to_clp(capital_usd)
-        open_pos = self.bot_instance.get_open_positions_count()
+        open_pos = self.bot_instance.trade_engine.get_open_positions_count()
         
         msg = f"📊 *Estado del Bot*\n\n"
         msg += f"Estado: {state}\n"
