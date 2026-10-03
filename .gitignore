@@ -1,0 +1,26 @@
+# Entornos Virtuales
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Variables de Entorno y Secretos
+.env
+.env.local
+*.pem
+
+# Base de Datos
+*.db
+*.sqlite3
+
+# Logs
+logs/
+*.csv
+*.log
+
+# Entornos y Herramientas del IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store

@@ -1,0 +1,106 @@
+bot:
+  # Nombre interno del bot para referencias y logs
+  name: "TradingBot"
+  
+  # Modo de operación general. 'passive' solo recolecta datos, 'active' opera, 'both' hace ambas cosas.
+  mode: "passive"                  
+  # Modo de operación de la lógica de trading: 'trend' (corta pérdidas rápido) o 'target' (solo cierra en ganancias).
+  trading_mode: "scalper"
+  
+  # Lista de pares de criptomonedas a operar. El formato debe ser MONEDA/BASE (ej. BTC/USDT).
+  trading_pairs:
+    - "BTC/USDT"
+    - "ETH/USDT"
+    - "SOL/USDT"
+    - "AVAX/USDT"
+    - "XRP/USDT"
+    - "DOGE/USDT"
+    - "ADA/USDT"
+    - "LINK/USDT"
+    - "DOT/USDT"
+    - "BNB/USDT"
+  
+  # Marco de tiempo general (timeframe) para analizar velas. '1m' = 1 minuto, '5m' = 5 minutos, '1h' = 1 hora.
+  timeframe: "1m"                  
+  
+  # Configuración para alternar automáticamente el timeframe según la hora del día (útil para gestionar volatilidad).
+  dynamic_timeframe:
+    # Activar o desactivar el cambio automático de timeframe.
+    enabled: true
+    # Rango de horas (en UTC) donde el mercado tiene mayor movimiento para operar más rápido.
+    active_hours_utc:
+      start: 13
+      end: 17
+    # Timeframe usado durante las 'active_hours_utc' (mercado volátil, ej. 1 minuto).
+    active_timeframe: "1m"
+    # Timeframe usado el resto del día (mercado más lento, ej. 5 minutos) para evitar falsas señales.
+    passive_timeframe: "5m"
+  
+  # Moneda base contra la que se valora la billetera y las métricas de riesgo (comúnmente USDT o USD).
+  base_currency: "USDT"
+  
+  # Moneda fiduciaria local para enviar reportes financieros humanizados por Telegram (CLP = Peso Chileno).
+  fiat_currency: "CLP"             
+
+risk:
+  # Número máximo de posiciones simultáneas que el bot tiene permitido mantener abiertas.
+  max_open_positions: 10
+  
+  # Porcentaje máximo del capital total (0.30 = 30%) que el bot tiene permitido gastar sumando todas sus operaciones.
+  max_capital_exposure_pct: 1.00
+  
+  # Fondo de Emergencia (0.30 = 30%) que el bot nunca gastará en compras nuevas, reservado para recompras (DCA).
+  reserve_capital_pct: 0.30
+  
+  # Pérdida máxima permitida por cada operación individual (0.02 = 2%). Sirve para calcular el Stop Loss y tamaño de orden.
+  max_loss_per_trade_pct: 0.02
+  
+  # Límite global de pérdida diaria (0.05 = 5%). Si se pierde esto en 1 día, el bot dejará de operar por seguridad.
+  daily_loss_limit_pct: 0.05
+  
+  # Límite de racha de pérdidas histórica (0.20 = 20%). Si la cuenta cae este porcentaje desde su pico, detiene operaciones.
+  max_drawdown_pct: 0.20
+  
+  # Porcentaje de ganancia objetivo por defecto para cerrar posiciones de forma estática (0.04 = 4%).
+  default_take_profit_pct: 0.04
+  
+  # Habilitar el cierre dinámico de ganancias (Stop Loss que sigue el precio hacia arriba).
+  trailing_stop: true
+  
+  # Distancia porcentual del Trailing Stop respecto al pico máximo del precio (0.02 = 2%).
+  trailing_stop_positive: 0.02
+
+strategies:
+  # Nombre de la estrategia principal que utilizará el bot para generar las señales de BUY/SELL.
+  active: "ema_crossover"
+  
+  # Configuración específica para la estrategia de Cruce de Medias Móviles Exponenciales (EMA).
+  ema_crossover:
+    # Período (cantidad de velas) para la línea rápida. Sigue el precio muy de cerca.
+    fast_period: 9
+    # Período (cantidad de velas) para la línea lenta. Marca la tendencia principal.
+    slow_period: 21
+    # Tipo de señal de cruce, indica que usaremos medias exponenciales.
+    signal_type: "ema"
+
+scheduler:
+  # Configuración de los reportes semanales automáticos que llegan a Telegram o Correo.
+  weekly_report:
+    # Día de la semana en que se genera el resumen (inglés).
+    day: "monday"
+    # Hora de emisión del reporte (0-23).
+    hour: 8
+    # Minuto exacto de emisión (0-59).
+    minute: 0
+    # Zona horaria para sincronizar los reportes con la vida real del usuario.
+    timezone: "America/Santiago"
+
+logging:
+  # Nivel mínimo de detalle para registrar eventos (DEBUG = Todo, INFO = Normal, ERROR = Solo fallos).
+  level: "INFO"
+  # Cada cuánto tiempo se rota y comprime el archivo de logs para no llenar el disco duro.
+  rotation: "1 day"
+  # Cuánto tiempo se conservan los logs antiguos antes de ser eliminados permanentemente.
+  retention: "30 days"
+  # Formato del log (útil si se exporta a ELK u otras herramientas de observabilidad).
+  format: "json"
