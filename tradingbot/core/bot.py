@@ -144,7 +144,26 @@ class TradingBot:
         executor = OrderExecutor(connector)
         try:
              res = await executor.execute_order(symbol, side, amount, "MARKET")
-             self.portfolio_manager.record_open_trade(res, strategy=f"MANUAL_{side}")
+             session = DatabaseSession.get_session()
+             try:
+                 opposite_side = "BUY" if side == "SELL" else "SELL"
+                 open_trades = session.query(Trade).filter(
+                     Trade.symbol == symbol,
+                     Trade.status == "OPEN",
+                     Trade.side == opposite_side
+                 ).all()
+             finally:
+                 session.close()
+
+             if open_trades and side == "SELL":
+                 remaining = amount
+                 for ot in open_trades:
+                     if remaining <= 0:
+                         break
+                     self.portfolio_manager.record_close_trade(ot.trade_id, res)
+                     remaining -= float(ot.quantity)
+             else:
+                 self.portfolio_manager.record_open_trade(res, strategy=f"MANUAL_{side}")
              return res
         finally:
              await connector.close()

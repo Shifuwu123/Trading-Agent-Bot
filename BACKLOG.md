@@ -20,6 +20,14 @@ Este documento actúa como la hoja de ruta y backlog oficial del Tredding Agent 
   - Adaptar los cálculos de "Tamaño de Posición" ya que Forex usa Lotes y Apalancamiento en vez de cantidad nominal.
 - **Estado**: En Backlog.
 
+## ✅ Tareas Resueltas Recientemente
+
+### 1. Dimensionamiento de Posición y Fondo de Reserva (Fase 11.1)
+- **Solución Implementada**: Se corrigió el cálculo de tamaño de orden en `risk_manager.py` y `trade_engine.py`. Ahora el capital utilizable (descontando el 30% del fondo de reserva) se fracciona equitativamente entre las posiciones máximas configuradas (`max_open_positions`), evitando que una sola orden intente consumir el 100% del saldo y sea bloqueada por exposición.
+
+### 2. Conciliación de Órdenes Manuales Telegram (Fase 11.2)
+- **Solución Implementada**: La función `execute_manual_order` en `bot.py` ahora concilia órdenes del lado opuesto. Al ejecutar un `/sell` manual, se cierran formalmente los trades abiertos coincidentes en la base de datos en vez de dejar registros huérfanos con estado `OPEN`.
+
 ## 🛠️ Deuda Técnica (Tech Debt - Post Auditoría)
 
 Durante la auditoría de agentes, se encontraron las siguientes áreas críticas que requieren refactorización inmediata (Fase 8):

@@ -90,17 +90,19 @@ class RiskManager:
         
         position_size = risk_amount / price_risk_per_unit
         
-        # Check against total capital exposure to not exceed it on a single trade
-        # (Though this isn't strictly required by the prompt, it is good practice
-        # to ensure a single trade doesn't blow past the max_capital_exposure_pct)
-        max_investment = total_capital * self.risk_config.max_capital_exposure_pct
-        investment_size = position_size * entry_price
+        # Cap position size so each trade only takes its fair share of available capital
+        # Available capital respects both max_capital_exposure_pct and reserve_capital_pct
+        reserve_pct = getattr(self.risk_config, "reserve_capital_pct", 0.30)
+        usable_capital_pct = max(0.05, self.risk_config.max_capital_exposure_pct - reserve_pct)
+        max_positions = max(1, getattr(self.risk_config, "max_open_positions", 10))
+        max_investment = (total_capital * usable_capital_pct) / max_positions
         
+        investment_size = position_size * entry_price
         if investment_size > max_investment:
             position_size = max_investment / entry_price
             log.info(
-                f"Position size limited by max_capital_exposure_pct. "
-                f"New size: {position_size}"
+                f"Position size limited by trade slot allocation ({max_investment:.2f} USD). "
+                f"New size: {position_size:.6f}"
             )
 
         log.info(

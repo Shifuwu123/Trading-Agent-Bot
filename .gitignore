@@ -12,7 +12,9 @@ __pycache__/
 
 # Base de Datos
 *.db
+*.db*
 *.sqlite3
+*.bak*
 
 # Logs
 logs/
