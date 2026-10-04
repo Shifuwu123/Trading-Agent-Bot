@@ -2,27 +2,50 @@
 .venv/
 venv/
 env/
+ENV/
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 
-# Variables de Entorno y Secretos
+# Variables de Entorno, Credenciales y Secretos
 .env
-.env.local
+.env.*
+!.env.example
 *.pem
+*.key
+*.cert
+*.crt
+*.p12
+*.pfx
+*.token
+secrets.*
+credentials.json
+auth.json
 
-# Base de Datos
+# Bases de Datos y Backups
 *.db
-*.db*
+*.db-*
+*.db.*
+*.sqlite
 *.sqlite3
+*.bak
 *.bak*
 
-# Logs
+# Logs y Reportes
 logs/
 *.csv
 *.log
 
-# Entornos y Herramientas del IDE
+# Testing y Cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Entornos y Herramientas del IDE / OS
 .vscode/
 .idea/
 *.swp
+*.swo
+*~
 .DS_Store
+Thumbs.db

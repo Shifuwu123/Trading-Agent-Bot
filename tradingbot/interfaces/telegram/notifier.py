@@ -1,11 +1,11 @@
 import requests
+import html
 from tradingbot.core.config import get_settings
-from tradingbot.utils.logger import log
+from tradingbot.utils.logger import log, sanitize_sensitive_data
 
 class TelegramNotifier:
     def __init__(self):
         settings = get_settings()
-        # Get from settings, fallback to standard os.getenv if missing in EnvSettings
         import os
         self.bot_token = getattr(settings, 'telegram_bot_token', os.getenv('TELEGRAM_BOT_TOKEN', ''))
         self.chat_id = getattr(settings, 'telegram_chat_id', os.getenv('TELEGRAM_CHAT_ID', ''))
@@ -27,7 +27,8 @@ class TelegramNotifier:
             response = requests.post(url, json=payload, timeout=10)
             response.raise_for_status()
         except Exception as e:
-            log.error(f"Failed to send Telegram message: {e}")
+            safe_err = sanitize_sensitive_data(str(e))
+            log.error(f"Failed to send Telegram message: {safe_err}")
 
     def send_trade_alert(self, trade_details: dict, capital_clp: float = None):
         """
@@ -65,8 +66,8 @@ class TelegramNotifier:
         self.send_message(msg)
 
     def send_error_alert(self, error_msg: str):
-        import html
-        safe_msg = html.escape(error_msg)
+        sanitized = sanitize_sensitive_data(str(error_msg))
+        safe_msg = html.escape(sanitized)
         msg = f"⚠️ <b>CRITICAL ERROR</b> ⚠️\n\n"
         msg += f"<pre>{safe_msg}</pre>"
         self.send_message(msg)

@@ -34,24 +34,18 @@ Este documento actúa como la hoja de ruta y backlog oficial del Tredding Agent 
   - Implementar colas de escritura o Locks transaccionales lógicos para SQLite.
 - **Estado**: Pendiente.
 
-### 2. [Prioridad ALTA] Sanitización de Logs & Enmascaramiento de Secretos (Security Sanitizer)
-- **Problema**: Los registros en CSV y las alertas de excepciones en Telegram envían trazas de error sin filtro. Si una librería externa o un error de red incluye el entorno o variables en el traceback, credenciales sensibles (claves API de Binance, token de Telegram) corren riesgo de quedar expuestas.
-- **Solución Propuesta**:
-  - Implementar un `SensitiveDataFilter` / Sanitizer centralizado en `logger.py` que reemplace automáticamente patrones de tokens y secrets con `***REDACTED***`.
-  - Envolver los tracebacks enviados a Telegram en sanitizadores estrictos.
-- **Estado**: Pendiente.
-
-### 3. [Prioridad MEDIA] Confirmación Interactiva de Órdenes Manuales (`/buy`, `/sell`)
+### 2. [Prioridad MEDIA] Confirmación Interactiva de Órdenes Manuales (`/buy`, `/sell`)
 - **Problema**: Actualmente los comandos `/buy` y `/sell` ejecutan la orden de mercado inmediatamente. Un error de escritura o parámetro puede disparar compras accidentales no deseadas.
 - **Solución Propuesta**:
   - Integrar teclado inline de confirmación previa: `[ ✅ Confirmar Compra ]` `[ ❌ Cancelar ]` con temporizador de expiración (30 segundos) antes de disparar al executor.
 - **Estado**: Pendiente.
 
-### 4. [Prioridad BAJA] Soporte de Inventario Negativo para Operaciones Cortas (Shorts)
+### 3. [Prioridad BAJA] Soporte de Inventario Negativo para Operaciones Cortas (Shorts)
 - **Problema**: `_update_portfolio_entry` reinicia el inventario a cero cuando la cantidad vendida iguala o excede el balance, lo cual es ideal para Spot pero imposibilita el seguimiento de ventas en corto (Shorts apalancados en Futuros).
 - **Solución Propuesta**:
   - Permitir inventario negativo cuando se habilite el módulo de margen/futuros y calcular PnL según lado activo de la posición.
 - **Estado**: Pendiente (requiere habilitar trading con derivados).
+
 
 ---
 
@@ -84,3 +78,10 @@ Este documento actúa como la hoja de ruta y backlog oficial del Tredding Agent 
     - **Flujo de Caja (`/cashflow`):** Reporte contable puro (capital base, depósitos, retiros, gastos, PnL realizado/activo y ROI) sin mezclar la lista de posiciones.
     - **Billetera (`/wallet` y `/billetera`):** Vista dedicada que detalla el saldo líquido en USDT, PnL flotante consolidado, posiciones activas por criptomoneda y el histórico de ganancias realizadas por símbolo.
   - **Botonera Interactiva:** Se agregó el botón directo `👝 Billetera` al teclado inline principal de `/status`, y botones de navegación cruzada entre Billetera y Flujo de Caja.
+
+### 6. Sanitización de Datos Sensibles, Purga de Secretos y Hardening para Open Source (Fase 11.6)
+- **Solución Implementada**:
+  - **Purga de Historial Git:** Se eliminó de raíz el archivo de base de datos SQLite histórico (`tradingbot.db.bak`) de todo el historial de commits y objetos Git utilizando `git-filter-repo`, garantizando que ninguna información de billetera, holdings, IDs de chat o trades quede en el historial público.
+  - **Protección Git y Plantilla Segura:** Se endureció `.gitignore` con exclusiones completas para cualquier variante de `.env*`, llaves, certificados, backups y bases de datos. Se creó `.env.example` estructurado con placeholders sin credenciales.
+  - **Sanitizador en Tiempo Real (`SensitiveDataFilter`):** Se implementó `sanitize_sensitive_data()` en `logger.py` y `notifier.py` para enmascarar automáticamente patrones de tokens de Telegram, tokens de GitHub, tokens Bearer y credenciales del entorno en logs CSV, salida de terminal y alertas críticas por Telegram.
+
