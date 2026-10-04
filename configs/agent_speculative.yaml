@@ -1,0 +1,57 @@
+# ============================================================
+# SubAgent 3: ESPECULATIVO — Tier 3 (Anomalías / Alto Riesgo)
+# Monedas: BEAMX, MUBARAK  ← PEPE EXCLUIDO (spread 0.23%)
+# ⚠️ ADVERTENCIA: Capital mínimo. INICIA EN MODO PASSIVE.
+# Decisión aplicada: Recomendación #2 (Escenario B) — Tier 3 en PASSIVE
+#   hasta que el sistema principal esté validado en producción.
+# Decisión aplicada: Recomendación #3 — Estado inicial PASSIVE
+#   Control humano sobre activos manipulables por ballenas.
+#   Activar con: /resume_speculative desde Telegram
+# ============================================================
+agent:
+  name: "SpeculativeAgent_Tier3"
+  agent_id: "speculative_t3"
+  capital_pool_pct: 0.00           # 0% capital en Escenario B (sin Tier3 activo)
+  # capital_pool_pct: 0.10         # Activar cuando se migre a Escenario A
+
+bot:
+  mode: "passive"                  # ← PASSIVE por defecto — NO opera hasta /resume_speculative
+  trading_mode: "scalper"
+  timeframe: "15m"                 # Velas largas para filtrar spikes falsos
+
+  trading_pairs:
+    - "BEAMX/USDT"
+    - "MUBARAK/USDT"
+    # PEPE/USDT EXCLUIDO: spread 0.23% destruye el margen del scalper
+
+  dynamic_timeframe:
+    enabled: false                 # Sin cambio dinámico — velas 15m siempre
+
+  base_currency: "USDT"
+  fiat_currency: "CLP"
+
+risk:
+  max_open_positions: 2
+  max_capital_exposure_pct: 0.50
+  reserve_capital_pct: 0.50
+  max_loss_per_trade_pct: 0.02     # SL 2% rígido — crítico en este tier
+  daily_loss_limit_pct: 0.04
+  max_drawdown_pct: 0.10           # Halt global al 10% de caída del pool
+  default_take_profit_pct: 0.06    # TP 6% (rangos >20% permiten capturar impulsos)
+  trailing_stop: true
+  trailing_stop_positive: 0.03
+  min_order_usd: 1.0
+
+strategies:
+  active: "ema_crossover"
+  ema_crossover:
+    fast_period: 21
+    slow_period: 55                # EMA más lenta para filtrar ruido especulativo
+    signal_type: "ema"
+
+# ============================================================
+# INSTRUCCIONES DE ACTIVACIÓN:
+# 1. Para activar operaciones: enviar /resume_speculative en Telegram
+# 2. Para asignar capital: cambiar capital_pool_pct a 0.10
+# 3. Migrar a Escenario A (con Tier3) después de 1 semana estable
+# ============================================================

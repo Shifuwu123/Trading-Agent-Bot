@@ -97,6 +97,16 @@ class RiskManager:
         max_positions = max(1, getattr(self.risk_config, "max_open_positions", 20))
         max_investment = (total_capital * usable_capital_pct) / max_positions
         
+        # Small capital support (e.g. 20 USD budget):
+        # Ensure max_investment meets min_order_usd if usable capital allows it
+        min_order_usd = getattr(self.risk_config, "min_order_usd", 5.0)
+        usable_capital = total_capital * usable_capital_pct
+        if max_investment < min_order_usd:
+            if usable_capital >= min_order_usd:
+                max_investment = min_order_usd
+            else:
+                max_investment = usable_capital
+
         investment_size = position_size * entry_price
         if investment_size > max_investment:
             position_size = max_investment / entry_price

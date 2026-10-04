@@ -1,0 +1,62 @@
+# ============================================================
+# SubAgent 4: MACRO TRADER — BTC & ETH
+# Monedas: BTC/USDT, ETH/USDT
+# Razón: Rango diario ~1% → requiere timeframe largo y EMA lenta
+# Basado en: Informe Mercado Crypto - Sección 2
+# Decisión aplicada: Recomendación #4 — EMA 50/200
+#   Golden Cross institucional: alta precisión, pocas comisiones,
+#   señal de confianza máxima para BTC/ETH.
+# Capital: 10% del total (Escenario B — Recomendación #2)
+# ============================================================
+agent:
+  name: "MacroTrader_BTCETH"
+  agent_id: "macro_btceth"
+  capital_pool_pct: 0.10           # 10% capital — bajo riesgo, alta liquidez como respaldo
+
+bot:
+  mode: "active"
+  trading_mode: "trend"            # Sigue la tendencia macro, corta pérdidas rápido
+  timeframe: "15m"                 # Vela ideal: captura impulsos sin ruido de BTC/ETH
+
+  trading_pairs:
+    - "BTC/USDT"
+    - "ETH/USDT"
+
+  dynamic_timeframe:
+    enabled: true
+    active_hours_utc:
+      start: 13
+      end: 17                      # Solapamiento NY + Londres (máxima liquidez BTC)
+    active_timeframe: "15m"
+    passive_timeframe: "1h"        # Fuera de horario: velas de 1h para filtrar ruido nocturno
+
+  base_currency: "USDT"
+  fiat_currency: "CLP"
+
+risk:
+  max_open_positions: 2
+  max_capital_exposure_pct: 0.90
+  reserve_capital_pct: 0.10
+  max_loss_per_trade_pct: 0.015    # SL 1.5% — rango diario estrecho
+  daily_loss_limit_pct: 0.04
+  max_drawdown_pct: 0.12
+  default_take_profit_pct: 0.015   # TP 1.5% — realista con rango diario ~1%
+  trailing_stop: true
+  trailing_stop_positive: 0.008    # Trailing ajustado para tendencias lentas
+  min_order_usd: 1.0
+
+strategies:
+  active: "ema_macro"              # ← Nueva estrategia EMA 50/200
+  ema_macro:
+    fast_period: 50                # EMA 50 — Golden Cross institucional
+    slow_period: 200               # EMA 200 — señal de largo plazo confiable
+    signal_type: "ema"
+    volume_filter: true            # Filtro de volumen: evita cruces muertos sin volumen
+
+# ============================================================
+# NOTAS TÉCNICAS EMA 50/200 vs 9/21:
+# - EMA 9/21 en BTC genera ~40-80 señales/mes con ~70% falsas → DESCARTADA
+# - EMA 50/200 genera ~2-5 señales/mes con ~20-25% falsas → SELECCIONADA
+# - Golden Cross en 15m con volumen confirmado = señal institucional confiable
+# - Si se quiere más actividad: cambiar a ema_crossover fast=21, slow=55
+# ============================================================

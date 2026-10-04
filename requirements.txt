@@ -54,3 +54,5 @@ uvloop==0.22.1
 xyzservices==2026.9.1
 yarl==1.25.1
 zlib-ng==1.0.0
+aiosqlite==0.22.1
+greenlet==3.5.6

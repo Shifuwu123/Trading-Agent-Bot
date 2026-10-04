@@ -22,6 +22,7 @@ class TelegramListener:
         self.settings = get_settings()
         self.token = getattr(self.settings, 'telegram_bot_token', os.getenv('TELEGRAM_BOT_TOKEN', ''))
         self.allowed_chat_id = str(getattr(self.settings, 'telegram_chat_id', os.getenv('TELEGRAM_CHAT_ID', '')))
+        self._pending_orders = {}
 
     async def verify_user(self, update: Update) -> bool:
         user_id = str(update.effective_chat.id) if update.effective_chat else ""
@@ -97,8 +98,18 @@ class TelegramListener:
                 InlineKeyboardButton("👝 Ver Billetera", callback_data="nav:wallet"),
             ],
             [
+                InlineKeyboardButton("🧹 Reiniciar PnL", callback_data="cmd:ask_reset_pnl"),
                 InlineKeyboardButton("⬅️ Volver a Estado", callback_data="nav:status"),
             ],
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
+    def _build_reset_pnl_confirmation_keyboard(self) -> InlineKeyboardMarkup:
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Confirmar Reinicio PnL", callback_data="cmd:confirm_reset_pnl"),
+                InlineKeyboardButton("❌ Cancelar", callback_data="nav:cashflow"),
+            ]
         ]
         return InlineKeyboardMarkup(keyboard)
 
@@ -206,7 +217,7 @@ class TelegramListener:
         # Reporte Financiero General
         msg = (
             "📊 <b>Reporte Financiero (Flujo de Caja)</b>\n\n"
-            "💼 <b>Inversión Inicial (Base):</b> $10,000.00 USD\n"
+            "💼 <b>Inversión Inicial (Base):</b> $20.00 USD\n"
         )
         if summary['deposits'] > 0:
             msg += f"📥 <b>Depósitos Adicionales:</b> +${summary['deposits']:,.2f} USD\n"
@@ -347,7 +358,8 @@ class TelegramListener:
             "• <code>/buy &lt;symbol&gt; &lt;cantidad&gt;</code>: Compra manual (Ej: <code>/buy BTC/USDT 0.01</code>)\n"
             "• <code>/sell &lt;symbol&gt; &lt;cantidad&gt;</code>: Venta manual (Ej: <code>/sell BTC/USDT 0.01</code>)\n"
             "• <code>/deposit &lt;monto&gt; [nota]</code>: Registrar depósito en cuenta simulada\n"
-            "• <code>/expense &lt;monto&gt; [nota]</code>: Registrar gasto operativo"
+            "• <code>/expense &lt;monto&gt; [nota]</code>: Registrar gasto operativo\n"
+            "• <code>/reset_pnl</code>: Reiniciar contador de ganancias y PnL acumulado a $0.00"
         )
         await update.message.reply_text(help_text, parse_mode="HTML", reply_markup=self._build_status_keyboard())
 
@@ -381,23 +393,35 @@ class TelegramListener:
         symbol = context.args[0].upper()
         try:
             amount = float(context.args[1])
+            if amount <= 0: raise ValueError()
         except ValueError:
-            await update.message.reply_text("❌ <b>Error:</b> La cantidad debe ser un número válido.", parse_mode="HTML")
+            await update.message.reply_text("❌ <b>Error:</b> La cantidad debe ser un número positivo.", parse_mode="HTML")
             return
 
-        await update.message.reply_text(f"⏳ Intentando ejecutar compra manual de <b>{amount}</b> {html.escape(symbol)}...", parse_mode="HTML")
-        try:
-            res = await self.bot_instance.execute_manual_order(symbol, "BUY", amount)
-            report_msg = f"Operación MANUAL ejecutada: BUY de {amount} {symbol} a {res.get('price', 'N/A')} USD"
-            registrar_log("REPORTE", report_msg)
-            await update.message.reply_text(
-                f"✅ <b>Compra ejecutada exitosamente.</b>\n"
-                f"<b>ID:</b> <code>{html.escape(str(res['order_id']))}</code>\n"
-                f"<b>Precio:</b> ${res['price']} USDT",
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            await update.message.reply_text(f"❌ <b>Error ejecutando orden:</b> {html.escape(str(e))}", parse_mode="HTML")
+        import time, uuid
+        order_key = uuid.uuid4().hex[:8]
+        self._pending_orders[order_key] = {
+            "symbol": symbol,
+            "side": "BUY",
+            "amount": amount,
+            "timestamp": time.time(),
+            "chat_id": update.effective_chat.id
+        }
+
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Confirmar Compra", callback_data=f"order_confirm:{order_key}"),
+                InlineKeyboardButton("❌ Cancelar", callback_data=f"order_cancel:{order_key}")
+            ]
+        ]
+        msg = (
+            f"🛒 <b>Confirmación Requerida: Orden Manual</b>\n\n"
+            f"• <b>Acción:</b> 🟢 <b>COMPRA (BUY)</b>\n"
+            f"• <b>Par:</b> <code>{html.escape(symbol)}</code>\n"
+            f"• <b>Cantidad:</b> <code>{amount}</code>\n\n"
+            f"⚠️ <i>Presiona el botón de confirmación en los próximos 30 segundos.</i>"
+        )
+        await update.message.reply_text(msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def sell_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self.verify_user(update): return
@@ -412,8 +436,9 @@ class TelegramListener:
         symbol = context.args[0].upper()
         try:
             amount = float(context.args[1])
+            if amount <= 0: raise ValueError()
         except ValueError:
-            await update.message.reply_text("❌ <b>Error:</b> La cantidad debe ser un número válido.", parse_mode="HTML")
+            await update.message.reply_text("❌ <b>Error:</b> La cantidad debe ser un número positivo.", parse_mode="HTML")
             return
 
         portfolio = self.bot_instance.portfolio_manager.get_portfolio_summary()
@@ -433,19 +458,31 @@ class TelegramListener:
             )
             return
 
-        await update.message.reply_text(f"⏳ Intentando ejecutar venta manual de <b>{amount}</b> {html.escape(symbol)}...", parse_mode="HTML")
-        try:
-            res = await self.bot_instance.execute_manual_order(symbol, "SELL", amount)
-            report_msg = f"Operación MANUAL ejecutada: SELL de {amount} {symbol} a {res.get('price', 'N/A')} USD"
-            registrar_log("REPORTE", report_msg)
-            await update.message.reply_text(
-                f"✅ <b>Venta ejecutada exitosamente.</b>\n"
-                f"<b>ID:</b> <code>{html.escape(str(res['order_id']))}</code>\n"
-                f"<b>Precio:</b> ${res['price']} USDT",
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            await update.message.reply_text(f"❌ <b>Error ejecutando orden:</b> {html.escape(str(e))}", parse_mode="HTML")
+        import time, uuid
+        order_key = uuid.uuid4().hex[:8]
+        self._pending_orders[order_key] = {
+            "symbol": symbol,
+            "side": "SELL",
+            "amount": amount,
+            "timestamp": time.time(),
+            "chat_id": update.effective_chat.id
+        }
+
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Confirmar Venta", callback_data=f"order_confirm:{order_key}"),
+                InlineKeyboardButton("❌ Cancelar", callback_data=f"order_cancel:{order_key}")
+            ]
+        ]
+        msg = (
+            f"🛒 <b>Confirmación Requerida: Orden Manual</b>\n\n"
+            f"• <b>Acción:</b> 🔴 <b>VENTA (SELL)</b>\n"
+            f"• <b>Par:</b> <code>{html.escape(symbol)}</code>\n"
+            f"• <b>Cantidad:</b> <code>{amount}</code>\n"
+            f"• <b>Disponible en billetera:</b> <code>{held_quantity:.8f} {html.escape(base_asset)}</code>\n\n"
+            f"⚠️ <i>Presiona el botón de confirmación en los próximos 30 segundos.</i>"
+        )
+        await update.message.reply_text(msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def mode_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self.verify_user(update): return
@@ -560,6 +597,18 @@ class TelegramListener:
         except Exception as e:
             await update.message.reply_text(f"❌ <b>Error al consultar bloqueos:</b> {html.escape(str(e))}", parse_mode="HTML")
 
+    async def reset_pnl_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await self.verify_user(update): return
+        msg = (
+            "⚠️ <b>Reinicio de PnL y Ganancias Acumuladas</b>\n\n"
+            "¿Confirmas que deseas reiniciar el contador de PnL y ganancias a <b>$0.00 USD</b>?\n\n"
+            "• Se archivarán las ganancias de trades cerrados anteriores para medir el rendimiento desde ahora.\n"
+            "• Tus posiciones activas y capital en billetera se mantendrán intactos.\n"
+            "• El ROI total neto se reiniciará a 0.00%."
+        )
+        await update.message.reply_text(msg, parse_mode="HTML", reply_markup=self._build_reset_pnl_confirmation_keyboard())
+
+
     # -------------------------------------------------------------
     # Inline Callback Handler
     # -------------------------------------------------------------
@@ -630,6 +679,70 @@ class TelegramListener:
                 msg, markup = self._get_wallet_payload()
                 await query.edit_message_text(msg, parse_mode="HTML", reply_markup=markup)
 
+            elif data == "cmd:ask_reset_pnl":
+                msg = (
+                    "⚠️ <b>Reinicio de PnL y Ganancias Acumuladas</b>\n\n"
+                    "¿Confirmas que deseas reiniciar el contador de PnL y ganancias a <b>$0.00 USD</b>?\n\n"
+                    "• Se archivarán las ganancias de trades cerrados anteriores para medir el rendimiento desde ahora.\n"
+                    "• Tus posiciones activas y capital en billetera se mantendrán intactos.\n"
+                    "• El ROI total neto se reiniciará a 0.00%."
+                )
+                await query.edit_message_text(
+                    msg,
+                    parse_mode="HTML",
+                    reply_markup=self._build_reset_pnl_confirmation_keyboard()
+                )
+
+            elif data == "cmd:confirm_reset_pnl":
+                res = self.bot_instance.portfolio_manager.reset_pnl(is_paper=True)
+                registrar_log("CASHFLOW", f"RESET_PNL: {res['archived_trades_count']} trades archivados (${res['archived_pnl']:.2f} USD)")
+                confirm_header = (
+                    "✅ <b>PnL Reiniciado Exitosamente</b>\n"
+                    f"<i>Se archivaron {res['archived_trades_count']} trades antiguos (${res['archived_pnl']:,.2f} USD).</i>\n\n"
+                )
+                cf_msg, markup = self._get_cashflow_payload()
+                await query.edit_message_text(
+                    confirm_header + cf_msg,
+                    parse_mode="HTML",
+                    reply_markup=markup
+                )
+
+
+            elif data.startswith("order_confirm:"):
+                import time
+                order_key = data.split(":", 1)[1]
+                pending = self._pending_orders.pop(order_key, None)
+                if not pending:
+                    await query.edit_message_text("⏰ <b>Orden expirada o no encontrada.</b>", parse_mode="HTML")
+                    return
+                if time.time() - pending["timestamp"] > 30:
+                    await query.edit_message_text("⏰ <b>Orden expirada</b> (límite 30 segundos). No se ejecutó.", parse_mode="HTML")
+                    return
+
+                symbol = pending["symbol"]
+                side = pending["side"]
+                amount = pending["amount"]
+                try:
+                    res = await self.bot_instance.execute_manual_order(symbol, side, amount)
+                    report_msg = f"Operación MANUAL CONFIRMADA: {side} de {amount} {symbol} a {res.get('price', 'N/A')} USD"
+                    registrar_log("REPORTE", report_msg)
+                    color = "🟢" if side == "BUY" else "🔴"
+                    await query.edit_message_text(
+                        f"✅ <b>{color} Orden manual {side} ejecutada exitosamente.</b>\n\n"
+                        f"• <b>Par:</b> <code>{html.escape(symbol)}</code>\n"
+                        f"• <b>Cantidad:</b> <code>{amount}</code>\n"
+                        f"• <b>ID:</b> <code>{html.escape(str(res.get('order_id', 'N/A')))}</code>\n"
+                        f"• <b>Precio:</b> ${res.get('price', 'N/A')} USDT",
+                        parse_mode="HTML"
+                    )
+                except Exception as e:
+                    await query.edit_message_text(f"❌ <b>Error ejecutando orden manual:</b> {html.escape(str(e))}", parse_mode="HTML")
+
+            elif data.startswith("order_cancel:"):
+                order_key = data.split(":", 1)[1]
+                self._pending_orders.pop(order_key, None)
+                await query.edit_message_text("❌ <b>Orden manual cancelada por el usuario.</b>", parse_mode="HTML")
+
         except BadRequest as e:
             if "Message is not modified" in str(e):
                 pass
@@ -663,6 +776,7 @@ class TelegramListener:
         app.add_handler(CommandHandler("deposit", self.deposit_command))
         app.add_handler(CommandHandler("expense", self.expense_command))
         app.add_handler(CommandHandler("cashflow", self.cashflow_command))
+        app.add_handler(CommandHandler("reset_pnl", self.reset_pnl_command))
         app.add_handler(CommandHandler("why_block", self.why_block_command))
 
         # Inline Button Callbacks

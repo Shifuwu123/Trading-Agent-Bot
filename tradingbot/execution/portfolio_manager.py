@@ -1,28 +1,63 @@
 from datetime import datetime
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
-from typing import Dict, Any, Optional
 from decimal import Decimal
+from typing import Dict, Any, Optional, List
+from contextlib import asynccontextmanager
+
+from sqlalchemy import create_engine, select, update, event
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from tradingbot.database.models import Trade, Portfolio, DigitalWallet, Candle, DecisionLog, CashFlow, Base
 from tradingbot.core.config import get_settings
 from tradingbot.utils.logger import log
 
+
 class DatabaseSession:
+    """
+    Gestiona las conexiones a la base de datos tanto síncronas como asíncronas (aiosqlite).
+    Configura SQLite con WAL mode y busy_timeout para concurrencia multi-agente sin bloqueos.
+    """
     _engine = None
     _SessionLocal = None
+    _async_engine = None
+    _AsyncSessionLocal = None
 
     @classmethod
     def initialize(cls):
         if cls._engine is None:
             settings = get_settings()
-            # If using sqlite, check_same_thread=False is often required for multi-threading
-            connect_args = {"check_same_thread": False} if "sqlite" in settings.database_url else {}
+            is_sqlite = "sqlite" in settings.database_url
+            connect_args = {"check_same_thread": False, "timeout": 15} if is_sqlite else {}
             cls._engine = create_engine(settings.database_url, connect_args=connect_args)
-            
-            # Ensure tables are created
+
+            if is_sqlite:
+                @event.listens_for(cls._engine, "connect")
+                def set_sqlite_pragma(dbapi_connection, connection_record):
+                    try:
+                        cursor = dbapi_connection.cursor()
+                        cursor.execute("PRAGMA journal_mode=WAL")
+                        cursor.execute("PRAGMA busy_timeout=15000")
+                        cursor.execute("PRAGMA synchronous=NORMAL")
+                        cursor.close()
+                    except Exception:
+                        pass
+
             Base.metadata.create_all(bind=cls._engine)
             cls._SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=cls._engine)
+
+            # Motor asíncrono para operaciones no bloqueantes
+            async_url = settings.database_url
+            if "sqlite:///" in async_url and "sqlite+aiosqlite:///" not in async_url:
+                async_url = async_url.replace("sqlite:///", "sqlite+aiosqlite:///")
+
+            async_connect_args = {"timeout": 15} if is_sqlite else {}
+            cls._async_engine = create_async_engine(async_url, connect_args=async_connect_args, echo=False)
+            cls._AsyncSessionLocal = async_sessionmaker(
+                bind=cls._async_engine,
+                expire_on_commit=False,
+                class_=AsyncSession
+            )
 
     @classmethod
     def get_session(cls) -> Session:
@@ -30,18 +65,36 @@ class DatabaseSession:
             cls.initialize()
         return cls._SessionLocal()
 
+    @classmethod
+    @asynccontextmanager
+    async def get_async_session(cls):
+        if cls._AsyncSessionLocal is None:
+            cls.initialize()
+        async with cls._AsyncSessionLocal() as session:
+            try:
+                yield session
+            except Exception:
+                await session.rollback()
+                raise
+            finally:
+                await session.close()
+
+
 class PortfolioManager:
     """
-    Manages portfolio state and trade records in the database.
+    Gestiona el estado del portafolio, balances y operaciones en la base de datos.
+    Ofrece interfaces síncronas y asíncronas para alta concurrencia.
     """
     def __init__(self):
         DatabaseSession.initialize()
         self.settings = get_settings()
 
-    def record_open_trade(self, execution_data: Dict[str, Any], strategy: str = "default") -> Trade:
-        """
-        Records a new open trade in the database.
-        """
+    # ─────────────────────────────────────────────────────────────────────────
+    # Sincrónicos (Compatibilidad hacia atrás)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def record_open_trade(self, execution_data: Dict[str, Any], strategy: str = "default", agent_id: str = "legacy") -> Trade:
+        """Registra una nueva operación de compra/apertura en la base de datos (sync)."""
         session = DatabaseSession.get_session()
         try:
             trade = Trade(
@@ -55,28 +108,27 @@ class PortfolioManager:
                 is_paper=execution_data["is_paper"],
                 strategy=strategy,
                 exchange=self.settings.exchange_id,
+                agent_id=agent_id,
                 opened_at=datetime.utcnow()
             )
             session.add(trade)
-            
-            # Update portfolio balance
+
             self._update_portfolio_entry(
-                session, 
-                execution_data["symbol"], 
-                execution_data["side"], 
-                execution_data["amount"], 
-                execution_data["price"], 
-                execution_data["is_paper"]
+                session,
+                execution_data["symbol"],
+                execution_data["side"],
+                execution_data["amount"],
+                execution_data["price"],
+                execution_data["is_paper"],
+                agent_id=agent_id
             )
-            
-            # Update virtual wallet balance if paper trading
+
             if execution_data["is_paper"]:
                 self._update_virtual_wallet(session, execution_data["side"], execution_data["amount"], execution_data["price"])
-            
+
             session.commit()
             session.refresh(trade)
-            log.info(f"Recorded open trade {trade.trade_id} for {trade.symbol}")
-            
+            log.info(f"Recorded open trade {trade.trade_id} for {trade.symbol} (Agent: {agent_id})")
             return trade
         except Exception as e:
             session.rollback()
@@ -86,52 +138,42 @@ class PortfolioManager:
             session.close()
 
     def record_close_trade(self, trade_id: str, execution_data: Dict[str, Any]) -> Optional[Trade]:
-        """
-        Records the closing of an open trade, calculates PnL, and updates the database.
-        """
+        """Registra el cierre de una operación y calcula el PnL (sync)."""
         session = DatabaseSession.get_session()
         try:
             trade = session.query(Trade).filter(Trade.trade_id == trade_id).first()
             if not trade:
                 log.warning(f"Trade {trade_id} not found in database to close.")
                 return None
-                
+
             price_exit_dec = Decimal(str(execution_data["price"]))
             trade.price_exit = price_exit_dec
             trade.status = "CLOSED"
             trade.closed_at = datetime.utcnow()
-            
-            # Calculate PnL
+
             if trade.side == "BUY":
-                # Bought to open, sold to close
                 trade.pnl = (price_exit_dec - trade.price_entry) * trade.quantity
                 trade.pnl_pct = (price_exit_dec - trade.price_entry) / trade.price_entry if trade.price_entry > 0 else 0
             else:
-                # Sold to open, bought to close (Short)
                 trade.pnl = (trade.price_entry - price_exit_dec) * trade.quantity
                 trade.pnl_pct = (trade.price_entry - price_exit_dec) / trade.price_entry if trade.price_entry > 0 else 0
-            
-            # Update portfolio balance
-            # For closing, the 'side' in execution_data is opposite to entry side.
+
             self._update_portfolio_entry(
-                session, 
-                execution_data["symbol"], 
-                execution_data["side"], 
-                execution_data["amount"], 
-                execution_data["price"], 
-                execution_data["is_paper"]
+                session,
+                execution_data["symbol"],
+                execution_data["side"],
+                execution_data["amount"],
+                execution_data["price"],
+                execution_data["is_paper"],
+                agent_id=trade.agent_id or "legacy"
             )
-            
-            # Update virtual wallet balance if paper trading
+
             if execution_data["is_paper"]:
-                # When closing a trade, if we bought to open and sell to close, we get money back
-                # Since side is "SELL" (closing a BUY), we add to wallet. 
                 self._update_virtual_wallet(session, execution_data["side"], execution_data["amount"], execution_data["price"])
-                
+
             session.commit()
             session.refresh(trade)
             log.info(f"Recorded close trade {trade.trade_id}. PnL: {trade.pnl}")
-            
             return trade
         except Exception as e:
             session.rollback()
@@ -140,46 +182,40 @@ class PortfolioManager:
         finally:
             session.close()
 
-    def _update_portfolio_entry(self, session: Session, symbol: str, side: str, amount: float, price: float, is_paper: bool):
-        """
-        Updates the portfolio balance based on an execution.
-        Must be called within an active session transaction.
-        """
+    def _update_portfolio_entry(self, session: Session, symbol: str, side: str, amount: float, price: float, is_paper: bool, agent_id: str = "legacy"):
         amount_dec = Decimal(str(amount))
         price_dec = Decimal(str(price))
-        
-        # For simplicity, we track the base asset (e.g., BTC from BTC/USDT)
         base_asset = symbol.split('/')[0] if '/' in symbol else symbol
-        
+
         portfolio = session.query(Portfolio).filter(
-            Portfolio.asset == base_asset, 
+            Portfolio.asset == base_asset,
             Portfolio.is_paper == is_paper
         ).first()
-        
+
         if not portfolio:
             portfolio = Portfolio(
                 asset=base_asset,
                 quantity=Decimal("0.0"),
                 avg_price=Decimal("0.0"),
                 current_price=price_dec,
-                is_paper=is_paper
+                is_paper=is_paper,
+                agent_id=agent_id
             )
             session.add(portfolio)
-        
+        else:
+            portfolio.agent_id = agent_id
+
         if side == "BUY":
-            # Adding to position
             total_value = (portfolio.quantity * portfolio.avg_price) + (amount_dec * price_dec)
             portfolio.quantity += amount_dec
             if portfolio.quantity > 0:
                 portfolio.avg_price = total_value / portfolio.quantity
-        else: 
-            # SELL - Reducing position
+        else:
             portfolio.quantity -= amount_dec
-            # If quantity hits 0 or below, we reset avg_price
             if portfolio.quantity <= 0:
-                 portfolio.quantity = Decimal("0.0")
-                 portfolio.avg_price = Decimal("0.0")
-                 
+                portfolio.quantity = Decimal("0.0")
+                portfolio.avg_price = Decimal("0.0")
+
         portfolio.current_price = price_dec
         if portfolio.quantity > 0:
             portfolio.unrealized_pnl = (portfolio.current_price - portfolio.avg_price) * portfolio.quantity
@@ -187,14 +223,11 @@ class PortfolioManager:
             portfolio.unrealized_pnl = Decimal("0.0")
 
     def update_asset_price(self, asset: str, current_price: float, is_paper: bool = True):
-        """
-        Updates the current market price and unrealized PnL for an asset in the portfolio.
-        """
         session = DatabaseSession.get_session()
         try:
             base_asset = asset.split('/')[0] if '/' in asset else asset
             portfolio = session.query(Portfolio).filter(
-                Portfolio.asset == base_asset, 
+                Portfolio.asset == base_asset,
                 Portfolio.is_paper == is_paper
             ).first()
             if portfolio:
@@ -212,45 +245,31 @@ class PortfolioManager:
             session.close()
 
     def _update_virtual_wallet(self, session: Session, side: str, amount: float, price: float):
-        """
-        Updates the DigitalWallet balance for paper trading.
-        """
-        telegram_id = str(self.settings.telegram_chat_id)
-        if not telegram_id:
-            telegram_id = "default"
-            
+        telegram_id = str(self.settings.telegram_chat_id) or "default"
         wallet = session.query(DigitalWallet).filter(
             DigitalWallet.telegram_id == telegram_id,
             DigitalWallet.is_paper == True
         ).first()
-        
+
         if not wallet:
             wallet = DigitalWallet(
                 telegram_id=telegram_id,
-                balance_usd=Decimal("10000.0"),
+                balance_usd=Decimal("20.0"),
                 is_paper=True
             )
             session.add(wallet)
-            
+
         amount_dec = Decimal(str(amount))
         price_dec = Decimal(str(price))
-        
         cost = amount_dec * price_dec
-        
-        # Ensure balance_usd is Decimal before arithmetic
         current_balance = Decimal(str(wallet.balance_usd))
-        
-        # BUY: We spend USDT to get BTC (subtract from balance)
-        # SELL: We get USDT back (add to balance)
+
         if side == "BUY":
             wallet.balance_usd = current_balance - cost
         else:
             wallet.balance_usd = current_balance + cost
 
     def record_decision(self, symbol: str, decision: str, reason: str = ""):
-        """
-        Registra una decisión (HOLD, BLOCKED, BUY, SELL) en la base de datos para estadísticas.
-        """
         session = DatabaseSession.get_session()
         try:
             log_entry = DecisionLog(
@@ -268,10 +287,6 @@ class PortfolioManager:
             session.close()
 
     def record_decisions_bulk(self, decisions: list):
-        """
-        Registra múltiples decisiones en una sola transacción masiva.
-        'decisions' debe ser una lista de dicts: [{'symbol': '...', 'decision': '...', 'reason': '...'}]
-        """
         session = DatabaseSession.get_session()
         try:
             timestamp = datetime.utcnow()
@@ -292,17 +307,11 @@ class PortfolioManager:
             session.close()
 
     def add_cashflow_record(self, record_type: str, amount_usd: float, description: str = "") -> dict:
-        """
-        Records a cash flow event (DEPOSIT, EXPENSE, WITHDRAWAL) and updates the DigitalWallet.
-        """
         session = DatabaseSession.get_session()
         try:
-            telegram_id = str(self.settings.telegram_chat_id)
-            if not telegram_id:
-                telegram_id = "default"
-                
+            telegram_id = str(self.settings.telegram_chat_id) or "default"
             amount_dec = Decimal(str(amount_usd))
-            
+
             cashflow = CashFlow(
                 telegram_id=telegram_id,
                 type=record_type,
@@ -311,24 +320,22 @@ class PortfolioManager:
                 is_paper=True
             )
             session.add(cashflow)
-            
-            # Update virtual wallet balance
+
             wallet = session.query(DigitalWallet).filter(
                 DigitalWallet.telegram_id == telegram_id,
                 DigitalWallet.is_paper == True
             ).first()
-            
+
             if not wallet:
-                wallet = DigitalWallet(telegram_id=telegram_id, balance_usd=Decimal("10000.0"), is_paper=True)
+                wallet = DigitalWallet(telegram_id=telegram_id, balance_usd=Decimal("20.0"), is_paper=True)
                 session.add(wallet)
-                
+
             current_balance = Decimal(str(wallet.balance_usd))
-            
             if record_type == "DEPOSIT":
                 wallet.balance_usd = current_balance + amount_dec
             elif record_type in ["EXPENSE", "WITHDRAWAL"]:
                 wallet.balance_usd = current_balance - amount_dec
-                
+
             session.commit()
             return {"status": "success", "new_balance": float(wallet.balance_usd)}
         except Exception as e:
@@ -339,32 +346,25 @@ class PortfolioManager:
             session.close()
 
     def get_cashflow_summary(self) -> dict:
-        """
-        Calculates total investments, expenses, trading PnL (realized + unrealized), and ROI.
-        """
         session = DatabaseSession.get_session()
         try:
-            telegram_id = str(self.settings.telegram_chat_id)
-            if not telegram_id:
-                telegram_id = "default"
-                
+            telegram_id = str(self.settings.telegram_chat_id) or "default"
             cashflows = session.query(CashFlow).filter(
                 CashFlow.telegram_id == telegram_id,
                 CashFlow.is_paper == True
             ).all()
-            
+
             total_deposits = sum(float(cf.amount_usd) for cf in cashflows if cf.type == "DEPOSIT")
             total_expenses = sum(float(cf.amount_usd) for cf in cashflows if cf.type == "EXPENSE")
             total_withdrawals = sum(float(cf.amount_usd) for cf in cashflows if cf.type == "WITHDRAWAL")
-            
+
             trades = session.query(Trade).filter(
                 Trade.status == "CLOSED",
                 Trade.is_paper == True
             ).all()
-            
+
             realized_pnl = sum(float(t.pnl) if t.pnl else 0.0 for t in trades)
 
-            # Active holdings unrealized PnL
             portfolio_items = session.query(Portfolio).filter(
                 Portfolio.is_paper == True,
                 Portfolio.quantity > 0
@@ -378,19 +378,16 @@ class PortfolioManager:
                     unrealized_pnl += float((p.current_price - p.avg_price) * p.quantity)
 
             total_pnl = realized_pnl + unrealized_pnl
-            
+
             wallet = session.query(DigitalWallet).filter(
                 DigitalWallet.telegram_id == telegram_id,
                 DigitalWallet.is_paper == True
             ).first()
-            
-            current_balance = float(wallet.balance_usd) if wallet else 10000.0
-            
-            # ROI is calculated based on net deposits minus expenses (actual capital invested)
-            # Total PnL includes both realized profits and current open positions' unrealized PnL
-            base_capital = 10000.0 + total_deposits - total_expenses
+
+            current_balance = float(wallet.balance_usd) if wallet else 20.0
+            base_capital = 20.0 + total_deposits - total_expenses
             roi_pct = (total_pnl / base_capital) * 100 if base_capital > 0 else 0.0
-            
+
             return {
                 "deposits": total_deposits,
                 "expenses": total_expenses,
@@ -405,25 +402,392 @@ class PortfolioManager:
             session.close()
 
     def get_portfolio_summary(self) -> list:
-        """
-        Returns a list of all currently held assets (quantity > 0) in the paper portfolio.
-        """
         session = DatabaseSession.get_session()
         try:
             portfolio = session.query(Portfolio).filter(
                 Portfolio.is_paper == True,
                 Portfolio.quantity > 0
             ).all()
-            
+
             return [
                 {
                     "asset": p.asset,
                     "quantity": float(p.quantity),
                     "avg_price": float(p.avg_price),
                     "current_price": float(p.current_price),
-                    "unrealized_pnl": float(p.unrealized_pnl) if p.unrealized_pnl is not None else float((p.current_price - p.avg_price) * p.quantity)
+                    "unrealized_pnl": float(p.unrealized_pnl) if p.unrealized_pnl is not None else float((p.current_price - p.avg_price) * p.quantity),
+                    "agent_id": getattr(p, "agent_id", "legacy")
                 }
                 for p in portfolio
             ]
         finally:
             session.close()
+
+    def reset_pnl(self, is_paper: bool = True) -> dict:
+        """
+        Archiva todos los trades cerrados históricos para reiniciar el PnL realizado y ROI a 0.00.
+        Preserva los trades con status='ARCHIVED' para no perder auditoría ni datos históricos.
+        No modifica posiciones abiertas (OPEN).
+        """
+        session = DatabaseSession.get_session()
+        try:
+            trades = session.query(Trade).filter(
+                Trade.status == "CLOSED",
+                Trade.is_paper == is_paper
+            ).all()
+
+            count = len(trades)
+            archived_pnl = sum(float(t.pnl) if t.pnl else 0.0 for t in trades)
+
+            for t in trades:
+                t.status = "ARCHIVED"
+
+            session.commit()
+            log.info(f"[PortfolioManager] PnL reset: {count} closed trades archived (Archived PnL: ${archived_pnl:,.2f} USD).")
+            return {
+                "status": "success",
+                "archived_trades_count": count,
+                "archived_pnl": archived_pnl
+            }
+        except Exception as e:
+            session.rollback()
+            log.error(f"[PortfolioManager] Error resetting PnL: {e}")
+            raise
+        finally:
+            session.close()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Asíncronos (aiosqlite + AsyncSession para concurrencia limpia)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def record_open_trade_async(self, execution_data: Dict[str, Any], strategy: str = "default", agent_id: str = "legacy") -> Trade:
+        """Registra una nueva operación de compra/apertura asíncronamente."""
+        async with DatabaseSession.get_async_session() as session:
+            try:
+                trade = Trade(
+                    trade_id=execution_data["order_id"],
+                    symbol=execution_data["symbol"],
+                    side=execution_data["side"],
+                    order_type=execution_data["type"],
+                    quantity=execution_data["amount"],
+                    price_entry=execution_data["price"],
+                    status="OPEN",
+                    is_paper=execution_data["is_paper"],
+                    strategy=strategy,
+                    exchange=self.settings.exchange_id,
+                    agent_id=agent_id,
+                    opened_at=datetime.utcnow()
+                )
+                session.add(trade)
+
+                await self._update_portfolio_entry_async(
+                    session,
+                    execution_data["symbol"],
+                    execution_data["side"],
+                    execution_data["amount"],
+                    execution_data["price"],
+                    execution_data["is_paper"],
+                    agent_id=agent_id
+                )
+
+                if execution_data["is_paper"]:
+                    await self._update_virtual_wallet_async(session, execution_data["side"], execution_data["amount"], execution_data["price"])
+
+                await session.commit()
+                log.info(f"[AsyncDB] Recorded open trade {trade.trade_id} for {trade.symbol} (Agent: {agent_id})")
+                return trade
+            except Exception as e:
+                await session.rollback()
+                log.error(f"[AsyncDB] Failed to record open trade: {e}")
+                raise
+
+    async def record_close_trade_async(self, trade_id: str, execution_data: Dict[str, Any]) -> Optional[Trade]:
+        """Registra el cierre de una operación asíncronamente."""
+        async with DatabaseSession.get_async_session() as session:
+            try:
+                result = await session.execute(select(Trade).filter(Trade.trade_id == trade_id))
+                trade = result.scalars().first()
+                if not trade:
+                    log.warning(f"[AsyncDB] Trade {trade_id} not found in database to close.")
+                    return None
+
+                price_exit_dec = Decimal(str(execution_data["price"]))
+                trade.price_exit = price_exit_dec
+                trade.status = "CLOSED"
+                trade.closed_at = datetime.utcnow()
+
+                if trade.side == "BUY":
+                    trade.pnl = (price_exit_dec - trade.price_entry) * trade.quantity
+                    trade.pnl_pct = (price_exit_dec - trade.price_entry) / trade.price_entry if trade.price_entry > 0 else 0
+                else:
+                    trade.pnl = (trade.price_entry - price_exit_dec) * trade.quantity
+                    trade.pnl_pct = (trade.price_entry - price_exit_dec) / trade.price_entry if trade.price_entry > 0 else 0
+
+                await self._update_portfolio_entry_async(
+                    session,
+                    execution_data["symbol"],
+                    execution_data["side"],
+                    execution_data["amount"],
+                    execution_data["price"],
+                    execution_data["is_paper"],
+                    agent_id=trade.agent_id or "legacy"
+                )
+
+                if execution_data["is_paper"]:
+                    await self._update_virtual_wallet_async(session, execution_data["side"], execution_data["amount"], execution_data["price"])
+
+                await session.commit()
+                log.info(f"[AsyncDB] Recorded close trade {trade.trade_id}. PnL: {trade.pnl}")
+                return trade
+            except Exception as e:
+                await session.rollback()
+                log.error(f"[AsyncDB] Failed to record close trade: {e}")
+                raise
+
+    async def _update_portfolio_entry_async(self, session: AsyncSession, symbol: str, side: str, amount: float, price: float, is_paper: bool, agent_id: str = "legacy"):
+        amount_dec = Decimal(str(amount))
+        price_dec = Decimal(str(price))
+        base_asset = symbol.split('/')[0] if '/' in symbol else symbol
+
+        result = await session.execute(
+            select(Portfolio).filter(
+                Portfolio.asset == base_asset,
+                Portfolio.is_paper == is_paper
+            )
+        )
+        portfolio = result.scalars().first()
+
+        if not portfolio:
+            portfolio = Portfolio(
+                asset=base_asset,
+                quantity=Decimal("0.0"),
+                avg_price=Decimal("0.0"),
+                current_price=price_dec,
+                is_paper=is_paper,
+                agent_id=agent_id
+            )
+            session.add(portfolio)
+        else:
+            portfolio.agent_id = agent_id
+
+        if side == "BUY":
+            total_value = (portfolio.quantity * portfolio.avg_price) + (amount_dec * price_dec)
+            portfolio.quantity += amount_dec
+            if portfolio.quantity > 0:
+                portfolio.avg_price = total_value / portfolio.quantity
+        else:
+            portfolio.quantity -= amount_dec
+            if portfolio.quantity <= 0:
+                portfolio.quantity = Decimal("0.0")
+                portfolio.avg_price = Decimal("0.0")
+
+        portfolio.current_price = price_dec
+        if portfolio.quantity > 0:
+            portfolio.unrealized_pnl = (portfolio.current_price - portfolio.avg_price) * portfolio.quantity
+        else:
+            portfolio.unrealized_pnl = Decimal("0.0")
+
+    async def update_asset_price_async(self, asset: str, current_price: float, is_paper: bool = True):
+        """Actualiza el precio de mercado y PnL no realizado de forma asíncrona."""
+        async with DatabaseSession.get_async_session() as session:
+            try:
+                base_asset = asset.split('/')[0] if '/' in asset else asset
+                result = await session.execute(
+                    select(Portfolio).filter(
+                        Portfolio.asset == base_asset,
+                        Portfolio.is_paper == is_paper
+                    )
+                )
+                portfolio = result.scalars().first()
+                if portfolio:
+                    price_dec = Decimal(str(current_price))
+                    portfolio.current_price = price_dec
+                    if portfolio.quantity > 0:
+                        portfolio.unrealized_pnl = (price_dec - portfolio.avg_price) * portfolio.quantity
+                    else:
+                        portfolio.unrealized_pnl = Decimal("0.0")
+                    await session.commit()
+            except Exception as e:
+                await session.rollback()
+                log.warning(f"[AsyncDB] Error updating asset price for {asset}: {e}")
+
+    async def _update_virtual_wallet_async(self, session: AsyncSession, side: str, amount: float, price: float):
+        telegram_id = str(self.settings.telegram_chat_id) or "default"
+        result = await session.execute(
+            select(DigitalWallet).filter(
+                DigitalWallet.telegram_id == telegram_id,
+                DigitalWallet.is_paper == True
+            )
+        )
+        wallet = result.scalars().first()
+
+        if not wallet:
+            wallet = DigitalWallet(
+                telegram_id=telegram_id,
+                balance_usd=Decimal("20.0"),
+                is_paper=True
+            )
+            session.add(wallet)
+
+        amount_dec = Decimal(str(amount))
+        price_dec = Decimal(str(price))
+        cost = amount_dec * price_dec
+        current_balance = Decimal(str(wallet.balance_usd))
+
+        if side == "BUY":
+            wallet.balance_usd = current_balance - cost
+        else:
+            wallet.balance_usd = current_balance + cost
+
+    async def record_decision_async(self, symbol: str, decision: str, reason: str = ""):
+        """Registra una micro-decisión asíncronamente."""
+        async with DatabaseSession.get_async_session() as session:
+            try:
+                log_entry = DecisionLog(
+                    symbol=symbol,
+                    decision=decision,
+                    reason=reason,
+                    timestamp=datetime.utcnow()
+                )
+                session.add(log_entry)
+                await session.commit()
+            except Exception as e:
+                await session.rollback()
+                log.warning(f"[AsyncDB] Error recording decision {decision} for {symbol}: {e}")
+
+    async def record_decisions_bulk_async(self, decisions: list):
+        """Registra decisiones masivas de forma asíncrona sin bloquear el event loop."""
+        async with DatabaseSession.get_async_session() as session:
+            try:
+                timestamp = datetime.utcnow()
+                logs = [
+                    DecisionLog(
+                        symbol=d['symbol'],
+                        decision=d['decision'],
+                        reason=d.get('reason', ''),
+                        timestamp=timestamp
+                    ) for d in decisions
+                ]
+                session.add_all(logs)
+                await session.commit()
+            except Exception as e:
+                await session.rollback()
+                log.warning(f"[AsyncDB] Error recording bulk decisions: {e}")
+
+    async def get_cashflow_summary_async(self) -> dict:
+        """Obtiene resumen de flujo de caja asíncronamente."""
+        async with DatabaseSession.get_async_session() as session:
+            telegram_id = str(self.settings.telegram_chat_id) or "default"
+            cf_result = await session.execute(
+                select(CashFlow).filter(
+                    CashFlow.telegram_id == telegram_id,
+                    CashFlow.is_paper == True
+                )
+            )
+            cashflows = cf_result.scalars().all()
+
+            total_deposits = sum(float(cf.amount_usd) for cf in cashflows if cf.type == "DEPOSIT")
+            total_expenses = sum(float(cf.amount_usd) for cf in cashflows if cf.type == "EXPENSE")
+            total_withdrawals = sum(float(cf.amount_usd) for cf in cashflows if cf.type == "WITHDRAWAL")
+
+            tr_result = await session.execute(
+                select(Trade).filter(
+                    Trade.status == "CLOSED",
+                    Trade.is_paper == True
+                )
+            )
+            trades = tr_result.scalars().all()
+            realized_pnl = sum(float(t.pnl) if t.pnl else 0.0 for t in trades)
+
+            pf_result = await session.execute(
+                select(Portfolio).filter(
+                    Portfolio.is_paper == True,
+                    Portfolio.quantity > 0
+                )
+            )
+            portfolio_items = pf_result.scalars().all()
+
+            unrealized_pnl = 0.0
+            for p in portfolio_items:
+                if p.unrealized_pnl is not None:
+                    unrealized_pnl += float(p.unrealized_pnl)
+                elif p.quantity and p.current_price and p.avg_price:
+                    unrealized_pnl += float((p.current_price - p.avg_price) * p.quantity)
+
+            total_pnl = realized_pnl + unrealized_pnl
+
+            w_result = await session.execute(
+                select(DigitalWallet).filter(
+                    DigitalWallet.telegram_id == telegram_id,
+                    DigitalWallet.is_paper == True
+                )
+            )
+            wallet = w_result.scalars().first()
+
+            current_balance = float(wallet.balance_usd) if wallet else 20.0
+            base_capital = 20.0 + total_deposits - total_expenses
+            roi_pct = (total_pnl / base_capital) * 100 if base_capital > 0 else 0.0
+
+            return {
+                "deposits": total_deposits,
+                "expenses": total_expenses,
+                "withdrawals": total_withdrawals,
+                "realized_pnl": realized_pnl,
+                "unrealized_pnl": unrealized_pnl,
+                "pnl": total_pnl,
+                "balance": current_balance,
+                "roi_pct": roi_pct
+            }
+
+    async def get_portfolio_summary_async(self) -> list:
+        """Obtiene holdings del portafolio asíncronamente."""
+        async with DatabaseSession.get_async_session() as session:
+            pf_result = await session.execute(
+                select(Portfolio).filter(
+                    Portfolio.is_paper == True,
+                    Portfolio.quantity > 0
+                )
+            )
+            portfolio = pf_result.scalars().all()
+
+            return [
+                {
+                    "asset": p.asset,
+                    "quantity": float(p.quantity),
+                    "avg_price": float(p.avg_price),
+                    "current_price": float(p.current_price),
+                    "unrealized_pnl": float(p.unrealized_pnl) if p.unrealized_pnl is not None else float((p.current_price - p.avg_price) * p.quantity),
+                    "agent_id": getattr(p, "agent_id", "legacy")
+                }
+                for p in portfolio
+            ]
+
+    async def reset_pnl_async(self, is_paper: bool = True) -> dict:
+        """Versión asíncrona de reset_pnl."""
+        async with DatabaseSession.get_async_session() as session:
+            try:
+                result = await session.execute(
+                    select(Trade).filter(
+                        Trade.status == "CLOSED",
+                        Trade.is_paper == is_paper
+                    )
+                )
+                trades = result.scalars().all()
+                count = len(trades)
+                archived_pnl = sum(float(t.pnl) if t.pnl else 0.0 for t in trades)
+
+                for t in trades:
+                    t.status = "ARCHIVED"
+
+                await session.commit()
+                log.info(f"[AsyncDB] PnL reset: {count} closed trades archived (Archived PnL: ${archived_pnl:,.2f} USD).")
+                return {
+                    "status": "success",
+                    "archived_trades_count": count,
+                    "archived_pnl": archived_pnl
+                }
+            except Exception as e:
+                await session.rollback()
+                log.error(f"[AsyncDB] Error resetting PnL: {e}")
+                raise
+
