@@ -94,7 +94,7 @@ class RiskManager:
         # Available capital respects both max_capital_exposure_pct and reserve_capital_pct
         reserve_pct = getattr(self.risk_config, "reserve_capital_pct", 0.30)
         usable_capital_pct = max(0.05, self.risk_config.max_capital_exposure_pct - reserve_pct)
-        max_positions = max(1, getattr(self.risk_config, "max_open_positions", 10))
+        max_positions = max(1, getattr(self.risk_config, "max_open_positions", 20))
         max_investment = (total_capital * usable_capital_pct) / max_positions
         
         investment_size = position_size * entry_price

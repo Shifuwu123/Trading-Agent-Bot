@@ -26,7 +26,7 @@ class BotConfig(BaseModel):
     fiat_currency: str = "CLP"
 
 class RiskConfig(BaseModel):
-    max_open_positions: int = 3
+    max_open_positions: int = 20
     max_capital_exposure_pct: float = 0.30
     reserve_capital_pct: float = 0.30
     max_loss_per_trade_pct: float = 0.02
