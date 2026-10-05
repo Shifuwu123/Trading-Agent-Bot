@@ -200,15 +200,18 @@ class TelegramListener:
 
         state = "Pausado ⏸️" if self.bot_instance.paused else "Corriendo ▶️"
         open_pos = self.bot_instance.trade_engine.get_open_positions_count()
+        max_pos = getattr(self.bot_instance.config.risk, "max_open_positions", 10)
         current_mode = getattr(self.bot_instance.config.bot, "trading_mode", "trend").upper()
+        cash_usd = await self.bot_instance.portfolio_manager.get_liquid_cash_async()
+        cash_clp = self.bot_instance.clp_converter.convert_usd_to_clp(cash_usd)
 
         msg = (
             "📊 <b>Estado del Bot</b>\n\n"
             f"• <b>Estado:</b> {state}\n"
             f"• <b>Modo de Trading:</b> <code>{current_mode}</code>\n"
-            f"• <b>Posiciones Abiertas:</b> {open_pos}\n"
-            f"• <b>Capital Estimado:</b> ${capital_usd:,.2f} USD\n"
-            f"• <b>Capital Estimado (CLP):</b> ${capital_clp:,.0f} CLP"
+            f"• <b>Posiciones Abiertas:</b> {open_pos}/{max_pos}\n"
+            f"• <b>Patrimonio Total:</b> ${capital_usd:,.2f} USD <i>(${capital_clp:,.0f} CLP)</i>\n"
+            f"• <b>Efectivo Disponible:</b> ${cash_usd:,.2f} USD <i>(${cash_clp:,.0f} CLP)</i>"
         )
         return msg, self._build_status_keyboard()
 

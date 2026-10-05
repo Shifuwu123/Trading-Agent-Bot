@@ -52,11 +52,24 @@ class OrderExecutor:
             try:
                 ticker = await self.connector.fetch_ticker(symbol)
                 execution_price = ticker.get('last') or ticker.get('close')
-                if execution_price is None:
-                    raise ValueError(f"Could not fetch valid price from ticker for {symbol}")
             except Exception as e:
-                log.error(f"Failed to fetch market price for mock execution: {e}")
-                raise ValueError("Cannot mock execution without a valid market price") from e
+                log.warning(f"Could not fetch live ticker for mock execution: {e}. Trying portfolio fallback.")
+            
+            if execution_price is None:
+                try:
+                    from tradingbot.execution.portfolio_manager import DatabaseSession
+                    from tradingbot.database.models import Portfolio
+                    session = DatabaseSession.get_session()
+                    base_sym = symbol.split('/')[0]
+                    p_entry = session.query(Portfolio).filter(Portfolio.asset == base_sym, Portfolio.is_paper == True).first()
+                    if p_entry and p_entry.current_price and float(p_entry.current_price) > 0:
+                        execution_price = float(p_entry.current_price)
+                    session.close()
+                except Exception as fe:
+                    log.warning(f"Fallback portfolio price failed: {fe}")
+
+            if execution_price is None:
+                raise ValueError("Cannot mock execution without a valid market price")
                 
         fake_id = f"mock_{uuid.uuid4().hex[:8]}"
         

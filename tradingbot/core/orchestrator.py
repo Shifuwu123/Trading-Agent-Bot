@@ -111,42 +111,17 @@ class OrchestratorBot:
 
     async def _fetch_total_capital(self) -> float:
         """
-        Obtiene el capital total disponible (paper trading o real).
-
-        En paper trading: consulta la DigitalWallet del usuario.
-        En producción: consulta el balance real de Binance.
+        Obtiene el patrimonio neto total disponible (paper trading o real).
+        En paper trading: Efectivo disponible + Valor de posiciones abiertas.
+        En producción: Saldo total de la cuenta en el exchange.
         """
-        if self.settings.paper_trading:
-            try:
-                from sqlalchemy import select
-                async with DatabaseSession.get_async_session() as session:
-                    telegram_id = str(self.settings.telegram_chat_id) or "default"
-                    result = await session.execute(
-                        select(DigitalWallet).filter(
-                            DigitalWallet.telegram_id == telegram_id,
-                            DigitalWallet.is_paper == True
-                        )
-                    )
-                    wallet = result.scalars().first()
-                    total = float(wallet.balance_usd) if wallet else 50.0
-                    log.info(f"[Orchestrator] Capital total (paper): ${total:,.2f} USDT")
-                    return total
-            except Exception as e:
-                log.warning(f"[Orchestrator] Error obteniendo capital paper: {e}")
-                return 50.0
-        else:
-            connector = CCXTConnector()
-            try:
-                balance = await connector.fetch_balance()
-                base = "USDT"
-                total = float(balance[base]["free"]) if base in balance else 50.0
-                log.info(f"[Orchestrator] Capital total (real): ${total:,.2f} USDT")
-                return total
-            except Exception as e:
-                log.warning(f"[Orchestrator] Error obteniendo capital real: {e}")
-                return 50.0
-            finally:
-                await connector.close()
+        try:
+            total = await self.portfolio_manager.get_total_equity_async()
+            log.info(f"[Orchestrator] Patrimonio neto total: ${total:,.2f} USDT")
+            return total
+        except Exception as e:
+            log.warning(f"[Orchestrator] Error obteniendo capital total: {e}")
+            return 50.0
 
     async def get_current_capital(self) -> float:
         """Helper para compatibilidad con TelegramListener."""

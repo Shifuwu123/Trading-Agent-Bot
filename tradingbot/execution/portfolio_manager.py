@@ -265,7 +265,7 @@ class PortfolioManager:
         current_balance = Decimal(str(wallet.balance_usd))
 
         if side == "BUY":
-            wallet.balance_usd = current_balance - cost
+            wallet.balance_usd = max(Decimal("0.0"), current_balance - cost)
         else:
             wallet.balance_usd = current_balance + cost
 
@@ -635,7 +635,7 @@ class PortfolioManager:
         current_balance = Decimal(str(wallet.balance_usd))
 
         if side == "BUY":
-            wallet.balance_usd = current_balance - cost
+            wallet.balance_usd = max(Decimal("0.0"), current_balance - cost)
         else:
             wallet.balance_usd = current_balance + cost
 
@@ -790,4 +790,81 @@ class PortfolioManager:
                 await session.rollback()
                 log.error(f"[AsyncDB] Error resetting PnL: {e}")
                 raise
+
+    def get_liquid_cash(self) -> float:
+        """Obtiene el efectivo disponible (USDT) no comprometido en operaciones."""
+        session = DatabaseSession.get_session()
+        try:
+            telegram_id = str(self.settings.telegram_chat_id) or "default"
+            wallet = session.query(DigitalWallet).filter(
+                DigitalWallet.telegram_id == telegram_id,
+                DigitalWallet.is_paper == True
+            ).first()
+            return float(wallet.balance_usd) if wallet else 50.0
+        finally:
+            session.close()
+
+    def get_total_equity(self) -> float:
+        """Calcula el patrimonio neto total (Efectivo disponible + Valor de mercado de activos en cartera)."""
+        session = DatabaseSession.get_session()
+        try:
+            cash = self.get_liquid_cash()
+            portfolio = session.query(Portfolio).filter(
+                Portfolio.is_paper == True,
+                Portfolio.quantity > 0
+            ).all()
+            positions_val = sum(
+                float(p.quantity) * (float(p.current_price) if p.current_price and float(p.current_price) > 0 else float(p.avg_price))
+                for p in portfolio
+            )
+            return max(0.0, cash + positions_val)
+        finally:
+            session.close()
+
+    async def get_liquid_cash_async(self) -> float:
+        """Versión asíncrona para obtener efectivo líquido disponible (USDT)."""
+        telegram_id = str(self.settings.telegram_chat_id) or "default"
+        async with DatabaseSession.get_async_session() as session:
+            result = await session.execute(
+                select(DigitalWallet).filter(
+                    DigitalWallet.telegram_id == telegram_id,
+                    DigitalWallet.is_paper == True
+                )
+            )
+            wallet = result.scalars().first()
+            return float(wallet.balance_usd) if wallet else 50.0
+
+    async def get_total_equity_async(self) -> float:
+        """Versión asíncrona para calcular patrimonio neto total (Cash + Posiciones Abiertas)."""
+        if not self.settings.paper_trading:
+            from tradingbot.market.ccxt_connector import CCXTConnector
+            connector = CCXTConnector()
+            try:
+                balance = await connector.fetch_balance()
+                base = "USDT"
+                if base in balance and 'total' in balance[base]:
+                    return float(balance[base]['total'])
+                elif base in balance and 'free' in balance[base]:
+                    return float(balance[base]['free'])
+                return 1000.0
+            except Exception as e:
+                log.warning(f"Error fetching real balance equity: {e}")
+                return 1000.0
+            finally:
+                await connector.close()
+
+        cash = await self.get_liquid_cash_async()
+        async with DatabaseSession.get_async_session() as session:
+            pf_result = await session.execute(
+                select(Portfolio).filter(
+                    Portfolio.is_paper == True,
+                    Portfolio.quantity > 0
+                )
+            )
+            portfolio = pf_result.scalars().all()
+            positions_val = sum(
+                float(p.quantity) * (float(p.current_price) if p.current_price and float(p.current_price) > 0 else float(p.avg_price))
+                for p in portfolio
+            )
+            return max(0.0, cash + positions_val)
 

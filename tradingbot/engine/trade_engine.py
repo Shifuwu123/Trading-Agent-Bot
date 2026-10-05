@@ -1,3 +1,4 @@
+import asyncio
 import traceback
 import ccxt
 from sqlalchemy import select
@@ -23,6 +24,7 @@ class TradeEngine:
         self.strategy = strategy
         self.notifier = notifier
         self.clp_converter = clp_converter
+        self._trade_lock = asyncio.Lock()
 
     def get_open_positions_count(self) -> int:
         session = DatabaseSession.get_session()
@@ -60,59 +62,68 @@ class TradeEngine:
                 
                 log.info(f"Signal {signal} generated for {symbol}")
                 
-                async with DatabaseSession.get_async_session() as session:
-                    result = await session.execute(select(Trade).filter(Trade.status == "OPEN"))
-                    open_trades = result.scalars().all()
-                
-                current_positions = len(open_trades)
-                open_trades_for_symbol = sum(1 for t in open_trades if t.symbol == symbol)
-                is_dca = open_trades_for_symbol > 0
-                
-                current_exposure = sum(float(t.price_entry) * float(t.quantity) for t in open_trades if t.side == "BUY")
-                exposure_pct = current_exposure / total_capital
-                
-                max_allowed_pct = self.config.risk.max_capital_exposure_pct
-                if not is_dca:
-                    max_allowed_pct -= getattr(self.config.risk, "reserve_capital_pct", 0.30)
-                
-                stop_loss_price = current_price * (1 - self.config.risk.max_loss_per_trade_pct)
-                amount = self.risk_manager.calculate_position_size(total_capital, current_price, stop_loss_price)
-                if amount <= 0: amount = 0.001
+                async with self._trade_lock:
+                    async with DatabaseSession.get_async_session() as session:
+                        result = await session.execute(select(Trade).filter(Trade.status == "OPEN"))
+                        open_trades = result.scalars().all()
+                    
+                    current_positions = len(open_trades)
+                    open_trades_for_symbol = sum(1 for t in open_trades if t.symbol == symbol)
+                    is_dca = open_trades_for_symbol > 0
 
-                # Cap amount to available headroom within max_allowed_pct
-                remaining_capital = max(0.0, (max_allowed_pct - exposure_pct) * total_capital)
-                if (amount * current_price) > remaining_capital:
-                    amount = remaining_capital / current_price
-                
-                trade_details_str = f" | Precio: {current_price} USD | Cant: {amount:.4f}"
-                
-                if not self.risk_manager.can_open_position(current_positions) and not is_dca:
-                    return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Max open positions reached{trade_details_str}"}
-                
-                # Check minimum viable trade ($5 USD or configurable / paper testing)
-                min_order_usd = getattr(self.config.risk, "min_order_usd", 1.0 if self.portfolio_manager.settings.paper_trading else 5.0)
-                if (amount * current_price) < min_order_usd or (exposure_pct + (amount * current_price / total_capital) > max_allowed_pct + 1e-5):
-                    return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Fondo de Reserva / Capital Exposure (DCA={is_dca}){trade_details_str}"}
-                
-                if not self.risk_manager.check_daily_loss(0.0, total_capital):
-                    return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Daily loss limit{trade_details_str}"}
-                
-                execution_result = await order_executor.execute_order(symbol=symbol, side=signal, amount=amount, order_type="MARKET")
-                agent_id = getattr(self.config, "agent", None) and getattr(self.config.agent, "agent_id", "legacy") or "legacy"
-                await self.portfolio_manager.record_open_trade_async(
-                    execution_result, 
-                    strategy=getattr(self.strategy, "name", "EMACrossover"),
-                    agent_id=agent_id
-                )
-                
-                capital_clp = self.clp_converter.convert_usd_to_clp(total_capital)
-                trade_details = {"symbol": symbol, "side": signal, "amount": amount, "price": current_price}
-                
-                report_msg = f"Operación ejecutada: {signal} de {amount} {symbol} a {current_price} USD"
-                registrar_log("REPORTE", report_msg)
-                
-                self.notifier.send_trade_alert(trade_details, capital_clp)
-                return {'symbol': symbol, 'decision': signal, 'reason': f"Ejecutado a {current_price} USD"}
+                    available_cash = await self.portfolio_manager.get_liquid_cash_async()
+                    total_equity = await self.portfolio_manager.get_total_equity_async()
+                    if total_equity <= 0:
+                        total_equity = total_capital
+                    
+                    current_exposure = sum(float(t.price_entry) * float(t.quantity) for t in open_trades if t.side == "BUY")
+                    exposure_pct = current_exposure / total_equity if total_equity > 0 else 1.0
+                    
+                    max_allowed_pct = self.config.risk.max_capital_exposure_pct
+                    if not is_dca:
+                        max_allowed_pct = max(0.05, max_allowed_pct - getattr(self.config.risk, "reserve_capital_pct", 0.30))
+                    
+                    stop_loss_price = current_price * (1 - self.config.risk.max_loss_per_trade_pct)
+                    amount = self.risk_manager.calculate_position_size(total_equity, current_price, stop_loss_price, is_dca=is_dca)
+                    if amount <= 0: amount = 0.001
+
+                    # Cap amount to available headroom within max_allowed_pct AND available cash
+                    remaining_exposure_capital = max(0.0, (max_allowed_pct - exposure_pct) * total_equity)
+                    usable_capital = min(remaining_exposure_capital, available_cash)
+                    if (amount * current_price) > usable_capital:
+                        amount = max(0.0, usable_capital / current_price)
+                    
+                    trade_details_str = f" | Precio: {current_price} USD | Cant: {amount:.4f}"
+                    
+                    if not self.risk_manager.can_open_position(current_positions) and not is_dca:
+                        return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Max open positions reached{trade_details_str}"}
+                    
+                    # Check minimum viable trade ($5 USD or configurable / paper testing)
+                    min_order_usd = getattr(self.config.risk, "min_order_usd", 1.0 if self.portfolio_manager.settings.paper_trading else 5.0)
+                    if (amount * current_price) < min_order_usd or (exposure_pct + (amount * current_price / total_equity) > max_allowed_pct + 1e-5):
+                        return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Fondo de Reserva / Capital Exposure (DCA={is_dca}){trade_details_str}"}
+                    
+                    if not self.risk_manager.check_daily_loss(0.0, total_equity):
+                        return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Daily loss limit{trade_details_str}"}
+                    
+                    execution_result = await order_executor.execute_order(
+                        symbol=symbol, side=signal, amount=amount, order_type="MARKET", price=current_price
+                    )
+                    agent_id = getattr(self.config, "agent", None) and getattr(self.config.agent, "agent_id", "legacy") or "legacy"
+                    await self.portfolio_manager.record_open_trade_async(
+                        execution_result, 
+                        strategy=getattr(self.strategy, "name", "EMACrossover"),
+                        agent_id=agent_id
+                    )
+                    
+                    capital_clp = self.clp_converter.convert_usd_to_clp(total_equity)
+                    trade_details = {"symbol": symbol, "side": signal, "amount": amount, "price": current_price}
+                    
+                    report_msg = f"Operación ejecutada: {signal} de {amount} {symbol} a {current_price} USD"
+                    registrar_log("REPORTE", report_msg)
+                    
+                    self.notifier.send_trade_alert(trade_details, capital_clp)
+                    return {'symbol': symbol, 'decision': signal, 'reason': f"Ejecutado a {current_price} USD"}
             else:
                 return {'symbol': symbol, 'decision': 'HOLD', 'reason': 'No action needed'}
         except (ccxt.RequestTimeout, ccxt.NetworkError, TimeoutError) as ne:
@@ -154,7 +165,9 @@ class TradeEngine:
                     
             if should_close:
                 execution_side = "SELL" if trade.side == "BUY" else "BUY"
-                execution_result = await order_executor.execute_order(symbol=symbol, side=execution_side, amount=float(trade.quantity), order_type="MARKET")
+                execution_result = await order_executor.execute_order(
+                    symbol=symbol, side=execution_side, amount=float(trade.quantity), order_type="MARKET", price=current_price
+                )
                 
                 executed_price = execution_result.get("price", current_price)
                 execution_result["price"] = executed_price

@@ -72,9 +72,9 @@ class RiskManager:
         )
         return True
 
-    def calculate_position_size(self, total_capital: float, entry_price: float, stop_loss_price: float) -> float:
+    def calculate_position_size(self, total_capital: float, entry_price: float, stop_loss_price: float, is_dca: bool = False) -> float:
         """
-        Calculates position size based on max_loss_per_trade_pct.
+        Calculates position size based on max_loss_per_trade_pct and slot allocation.
         Returns the number of units to trade.
         """
         if total_capital <= 0 or entry_price <= 0 or stop_loss_price <= 0:
@@ -90,17 +90,22 @@ class RiskManager:
         
         position_size = risk_amount / price_risk_per_unit
         
-        # Check against total capital exposure to not exceed it on a single trade
-        # (Though this isn't strictly required by the prompt, it is good practice
-        # to ensure a single trade doesn't blow past the max_capital_exposure_pct)
-        max_investment = total_capital * self.risk_config.max_capital_exposure_pct
+        # Check against slot budget and total capital exposure
+        usable_exposure_pct = self.risk_config.max_capital_exposure_pct
+        if not is_dca:
+            usable_exposure_pct = max(0.05, usable_exposure_pct - getattr(self.risk_config, "reserve_capital_pct", 0.30))
+
+        max_positions = max(1, getattr(self.risk_config, "max_open_positions", 10))
+        slot_budget = (total_capital * usable_exposure_pct) / max_positions
+        min_order = getattr(self.risk_config, "min_order_usd", 1.0)
+        max_investment = min(total_capital * self.risk_config.max_capital_exposure_pct, max(slot_budget, min_order))
         investment_size = position_size * entry_price
         
         if investment_size > max_investment:
             position_size = max_investment / entry_price
             log.info(
-                f"Position size limited by max_capital_exposure_pct. "
-                f"New size: {position_size}"
+                f"Position size limited by slot budget / capital exposure (${max_investment:,.2f} USD). "
+                f"New size: {position_size:.4f}"
             )
 
         log.info(

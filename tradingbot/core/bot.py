@@ -42,36 +42,12 @@ class TradingBot:
         log.info("TradingBot initialized with TradeEngine orchestrator.")
 
     async def get_current_capital(self) -> float:
-        if self.settings.paper_trading:
-            from tradingbot.database.models import DigitalWallet
-            session = DatabaseSession.get_session()
-            try:
-                telegram_id = str(self.settings.telegram_chat_id)
-                wallet = session.query(DigitalWallet).filter(
-                    DigitalWallet.telegram_id == telegram_id,
-                    DigitalWallet.is_paper == True
-                ).first()
-                if wallet:
-                    return float(wallet.balance_usd)
-                return 10000.0
-            except Exception as e:
-                log.warning(f"Error querying DigitalWallet: {e}")
-                return 10000.0
-            finally:
-                session.close()
-        else:
-            connector = CCXTConnector()
-            try:
-                balance = await connector.fetch_balance()
-                base = self.config.bot.base_currency
-                if base in balance and 'free' in balance[base]:
-                    return float(balance[base]['free'])
-                return 1000.0
-            except Exception as e:
-                log.warning(f"Could not fetch balance for capital, defaulting to 1000.0. Error: {e}")
-                return 1000.0
-            finally:
-                await connector.close()
+        try:
+            total = await self.portfolio_manager.get_total_equity_async()
+            return total
+        except Exception as e:
+            log.warning(f"Error fetching total equity in bot: {e}")
+            return 50.0
 
     def _get_current_timeframe(self) -> str:
         dt_cfg = self.config.bot.dynamic_timeframe
