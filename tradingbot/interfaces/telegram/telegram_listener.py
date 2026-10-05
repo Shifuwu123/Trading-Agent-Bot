@@ -139,6 +139,9 @@ class TelegramListener:
             ],
             [
                 InlineKeyboardButton("🔄 Actualizar", callback_data=f"stats_h:{active_h}"),
+                InlineKeyboardButton("🛡️ Ver Bloqueos", callback_data="nav:why_block"),
+            ],
+            [
                 InlineKeyboardButton("⬅️ Volver a Estado", callback_data="nav:status"),
             ],
         ]

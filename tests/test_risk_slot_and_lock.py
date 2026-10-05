@@ -56,3 +56,57 @@ async def test_total_equity_calculation():
     equity = await pm.get_total_equity_async()
     assert cash >= 0
     assert equity >= cash
+
+@pytest.mark.asyncio
+async def test_no_duplicate_buys_for_open_symbol():
+    from unittest.mock import MagicMock, AsyncMock
+    import pandas as pd
+    from tradingbot.engine.trade_engine import TradeEngine
+    from tradingbot.database.models import Trade
+
+    config = load_yaml_config("config.yaml")
+    rm = RiskManager(config)
+    pm = PortfolioManager()
+    strategy = MagicMock()
+    strategy.slow_period = 21
+    strategy.generate_signal.return_value = "BUY"
+    notifier = MagicMock()
+    clp_converter = MagicMock()
+    clp_converter.convert_usd_to_clp.return_value = 50000
+
+    te = TradeEngine(config, rm, pm, strategy, notifier, clp_converter)
+    
+    # Insert a dummy open trade
+    session = DatabaseSession.get_session()
+    dummy_trade = Trade(
+        trade_id="test_dup_001",
+        symbol="TEST/USDT",
+        side="BUY",
+        quantity=1.0,
+        price_entry=10.0,
+        status="OPEN"
+    )
+    session.add(dummy_trade)
+    session.commit()
+    session.close()
+
+    try:
+        # Mock data collector returning dummy candle
+        mock_collector = MagicMock()
+        mock_df = pd.DataFrame({'close': [10.0] * 80})
+        mock_collector.get_historical_data = AsyncMock(return_value=mock_df)
+        mock_executor = MagicMock()
+        mock_executor.execute_order = AsyncMock()
+
+        result = await te.process_symbol("TEST/USDT", "1m", 50.0, mock_collector, mock_executor)
+        
+        # Must return HOLD with informative reason
+        assert result['decision'] == "HOLD"
+        assert "Posición ya abierta" in result['reason']
+        mock_executor.execute_order.assert_not_called()
+    finally:
+        # Cleanup
+        session = DatabaseSession.get_session()
+        session.query(Trade).filter(Trade.trade_id == "test_dup_001").delete()
+        session.commit()
+        session.close()

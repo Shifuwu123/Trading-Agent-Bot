@@ -69,7 +69,14 @@ class TradeEngine:
                     
                     current_positions = len(open_trades)
                     open_trades_for_symbol = sum(1 for t in open_trades if t.symbol == symbol)
-                    is_dca = open_trades_for_symbol > 0
+                    
+                    # Si ya existe una posición abierta para este símbolo, no duplicar compras
+                    if open_trades_for_symbol > 0:
+                        return {'symbol': symbol, 'decision': 'HOLD', 'reason': f"Posición ya abierta para {symbol} (esperando TP/SL)"}
+
+                    # Validar límite de posiciones abiertas concurrentes
+                    if not self.risk_manager.can_open_position(current_positions):
+                        return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Límite de posiciones abiertas alcanzado ({current_positions}/{self.config.risk.max_open_positions})"}
 
                     available_cash = await self.portfolio_manager.get_liquid_cash_async()
                     total_equity = await self.portfolio_manager.get_total_equity_async()
@@ -77,35 +84,35 @@ class TradeEngine:
                         total_equity = total_capital
                     
                     current_exposure = sum(float(t.price_entry) * float(t.quantity) for t in open_trades if t.side == "BUY")
-                    exposure_pct = current_exposure / total_equity if total_equity > 0 else 1.0
+                    exposure_pct = current_exposure / total_equity if total_equity > 0 else 0.0
                     
-                    max_allowed_pct = self.config.risk.max_capital_exposure_pct
-                    if not is_dca:
-                        max_allowed_pct = max(0.05, max_allowed_pct - getattr(self.config.risk, "reserve_capital_pct", 0.30))
+                    max_allowed_pct = max(0.05, self.config.risk.max_capital_exposure_pct - getattr(self.config.risk, "reserve_capital_pct", 0.30))
                     
-                    stop_loss_price = current_price * (1 - self.config.risk.max_loss_per_trade_pct)
-                    amount = self.risk_manager.calculate_position_size(total_equity, current_price, stop_loss_price, is_dca=is_dca)
-                    if amount <= 0: amount = 0.001
-
-                    # Cap amount to available headroom within max_allowed_pct AND available cash
-                    remaining_exposure_capital = max(0.0, (max_allowed_pct - exposure_pct) * total_equity)
-                    usable_capital = min(remaining_exposure_capital, available_cash)
-                    if (amount * current_price) > usable_capital:
-                        amount = max(0.0, usable_capital / current_price)
-                    
-                    trade_details_str = f" | Precio: {current_price} USD | Cant: {amount:.4f}"
-                    
-                    if not self.risk_manager.can_open_position(current_positions) and not is_dca:
-                        return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Max open positions reached{trade_details_str}"}
-                    
-                    # Check minimum viable trade ($5 USD or configurable / paper testing)
+                    # Dimensionamiento por ranura (slot)
+                    max_positions = max(1, getattr(self.config.risk, "max_open_positions", 10))
+                    slot_budget = (total_equity * max_allowed_pct) / max_positions
                     min_order_usd = getattr(self.config.risk, "min_order_usd", 1.0 if self.portfolio_manager.settings.paper_trading else 5.0)
-                    if (amount * current_price) < min_order_usd or (exposure_pct + (amount * current_price / total_equity) > max_allowed_pct + 1e-5):
-                        return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Fondo de Reserva / Capital Exposure (DCA={is_dca}){trade_details_str}"}
-                    
+
+                    # Verificar límite de exposición de capital (preservando fondo de reserva)
+                    remaining_exposure_capital = max(0.0, (max_allowed_pct - exposure_pct) * total_equity)
+                    if remaining_exposure_capital < min_order_usd:
+                        return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Límite de exposición alcanzado ({exposure_pct:.1%}/{max_allowed_pct:.1%}) | Reserva protegida"}
+
+                    # Verificar efectivo líquido disponible en billetera
+                    if available_cash < min_order_usd:
+                        return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Efectivo insuficiente (${available_cash:.2f} USD < mín ${min_order_usd:.2f} USD)"}
+
+                    # Asignar presupuesto de orden: menor entre slot, margen de exposición y efectivo libre
+                    target_order_usd = max(slot_budget, min_order_usd)
+                    order_usd = min(target_order_usd, remaining_exposure_capital, available_cash)
+                    if order_usd < min_order_usd:
+                        return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Fondos insuficientes (${order_usd:.2f} USD < mín ${min_order_usd:.2f} USD)"}
+
+                    amount = order_usd / current_price
+
                     if not self.risk_manager.check_daily_loss(0.0, total_equity):
-                        return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Daily loss limit{trade_details_str}"}
-                    
+                        return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': "Límite de pérdida diaria alcanzado"}
+
                     execution_result = await order_executor.execute_order(
                         symbol=symbol, side=signal, amount=amount, order_type="MARKET", price=current_price
                     )
@@ -119,11 +126,11 @@ class TradeEngine:
                     capital_clp = self.clp_converter.convert_usd_to_clp(total_equity)
                     trade_details = {"symbol": symbol, "side": signal, "amount": amount, "price": current_price}
                     
-                    report_msg = f"Operación ejecutada: {signal} de {amount} {symbol} a {current_price} USD"
+                    report_msg = f"Operación ejecutada: {signal} de {amount:.4f} {symbol} a {current_price} USD (${order_usd:.2f} USD)"
                     registrar_log("REPORTE", report_msg)
                     
                     self.notifier.send_trade_alert(trade_details, capital_clp)
-                    return {'symbol': symbol, 'decision': signal, 'reason': f"Ejecutado a {current_price} USD"}
+                    return {'symbol': symbol, 'decision': signal, 'reason': f"Ejecutado a {current_price} USD (${order_usd:.2f} USD)"}
             else:
                 return {'symbol': symbol, 'decision': 'HOLD', 'reason': 'No action needed'}
         except (ccxt.RequestTimeout, ccxt.NetworkError, TimeoutError) as ne:
