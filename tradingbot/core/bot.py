@@ -53,10 +53,10 @@ class TradingBot:
                 ).first()
                 if wallet:
                     return float(wallet.balance_usd)
-                return 20.0
+                return 50.0
             except Exception as e:
                 log.warning(f"Error querying DigitalWallet: {e}")
-                return 20.0
+                return 50.0
             finally:
                 session.close()
         else:

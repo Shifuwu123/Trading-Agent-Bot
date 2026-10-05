@@ -16,7 +16,8 @@ from tradingbot.market.ccxt_connector import CCXTConnector
 from tradingbot.market.data_collector import DataCollector
 from tradingbot.execution.order_executor import OrderExecutor
 from tradingbot.execution.portfolio_manager import PortfolioManager, DatabaseSession
-from tradingbot.database.models import DigitalWallet
+from tradingbot.database.models import DigitalWallet, Trade, Portfolio, DecisionLog
+from sqlalchemy import or_, func
 from tradingbot.utils.logger import log
 from tradingbot.utils.clp_converter import CLPConverter
 from tradingbot.interfaces.telegram.notifier import TelegramNotifier
@@ -117,17 +118,17 @@ class BaseAgent(ABC):
                     return total * self.capital_pool_pct
             except Exception as e:
                 log.warning(f"[{self.agent_name}] Error consultando wallet: {e}")
-                return 20.0 * self.capital_pool_pct
+                return 50.0 * self.capital_pool_pct
         else:
             connector = CCXTConnector()
             try:
                 balance = await connector.fetch_balance()
                 base = self.config.bot.base_currency
-                total = float(balance[base]["free"]) if base in balance else 20.0
+                total = float(balance[base]["free"]) if base in balance else 50.0
                 return total * self.capital_pool_pct
             except Exception as e:
                 log.warning(f"[{self.agent_name}] Error obteniendo balance: {e}")
-                return 20.0 * self.capital_pool_pct
+                return 50.0 * self.capital_pool_pct
             finally:
                 await connector.close()
 
@@ -159,6 +160,9 @@ class BaseAgent(ABC):
                     return
 
             capital = await self._get_assigned_capital()
+
+            # Asegurar mercados en memoria antes del gather concurrente
+            await connector.ensure_markets_loaded()
 
             # Procesar símbolos concurrentemente
             tasks = [
@@ -234,25 +238,127 @@ class BaseAgent(ABC):
     def pause(self):
         """Pausa el subagente sin detener el scheduler."""
         self.paused = True
+        self.config.bot.mode = "passive"
         log.info(f"[{self.agent_name}] Pausado (modo PASSIVE).")
 
     def resume(self):
         """Reanuda el subagente."""
         self.paused = False
+        self.config.bot.mode = "active"
         log.info(f"[{self.agent_name}] Reanudado (modo ACTIVE).")
 
     def get_status(self) -> dict:
-        """Retorna el estado actual del subagente para el panel global."""
+        """Retorna el estado detallado del subagente para el panel y comando status."""
         mode = "PASSIVE" if self.paused else "ACTIVE"
+        pairs = self.config.bot.trading_pairs or []
+        trading_mode = getattr(self.config.bot, "trading_mode", "trend")
+        current_tf = self._get_current_timeframe()
+
+        open_positions = []
+        unrealized_pnl_total = 0.0
+        closed_trades_count = 0
+        winning_trades = 0
+        losing_trades = 0
+        realized_pnl_usd = 0.0
+        eval_counts = {"HOLD": 0, "BUY": 0, "SELL": 0, "BLOCKED": 0, "ERROR": 0}
+        total_evals = 0
+
+        session = DatabaseSession.get_session()
+        try:
+            # Consultar portfolio para precios actuales
+            portfolio_map = {}
+            p_rows = session.query(Portfolio).all()
+            for p in p_rows:
+                portfolio_map[p.asset] = {
+                    "current_price": float(p.current_price or 0.0),
+                    "unrealized_pnl": float(p.unrealized_pnl or 0.0)
+                }
+
+            # Posiciones abiertas del agente
+            open_trades = session.query(Trade).filter(
+                Trade.status == "OPEN",
+                or_(Trade.agent_id == self.agent_id, Trade.symbol.in_(pairs))
+            ).all()
+
+            for ot in open_trades:
+                base_asset = ot.symbol.split('/')[0] if '/' in ot.symbol else ot.symbol
+                cur_info = portfolio_map.get(base_asset, {})
+                cur_px = cur_info.get("current_price", float(ot.price_entry or 0.0))
+                if cur_px == 0.0:
+                    cur_px = float(ot.price_entry or 0.0)
+
+                entry_px = float(ot.price_entry or 0.0)
+                qty = float(ot.quantity or 0.0)
+                if ot.side == "BUY":
+                    u_pnl = (cur_px - entry_px) * qty
+                else:
+                    u_pnl = (entry_px - cur_px) * qty
+                u_pnl_pct = (u_pnl / (entry_px * qty) * 100) if (entry_px * qty) > 0 else 0.0
+                unrealized_pnl_total += u_pnl
+
+                open_positions.append({
+                    "symbol": ot.symbol,
+                    "side": ot.side,
+                    "quantity": qty,
+                    "entry_price": entry_px,
+                    "current_price": cur_px,
+                    "unrealized_pnl": u_pnl,
+                    "unrealized_pnl_pct": u_pnl_pct,
+                    "opened_at": ot.opened_at.isoformat() if ot.opened_at else None,
+                })
+
+            # Trades cerrados del agente
+            closed_trades = session.query(Trade).filter(
+                Trade.status == "CLOSED",
+                Trade.agent_id == self.agent_id
+            ).all()
+            closed_trades_count = len(closed_trades)
+            for ct in closed_trades:
+                pnl_val = float(ct.pnl or 0.0)
+                realized_pnl_usd += pnl_val
+                if pnl_val > 0:
+                    winning_trades += 1
+                elif pnl_val < 0:
+                    losing_trades += 1
+
+            # Evaluaciones (DecisionLog)
+            if pairs:
+                q_eval = session.query(DecisionLog.decision, func.count(DecisionLog.id)).filter(
+                    DecisionLog.symbol.in_(pairs)
+                )
+                if self._started_at:
+                    q_eval = q_eval.filter(DecisionLog.timestamp >= self._started_at)
+                for dec, cnt in q_eval.group_by(DecisionLog.decision).all():
+                    eval_counts[dec] = cnt
+                    total_evals += cnt
+        except Exception as e:
+            log.warning(f"[{self.agent_name}] Error en get_status: {e}")
+        finally:
+            session.close()
+
+        total_pnl_usd = realized_pnl_usd + unrealized_pnl_total
+
         return {
             "agent_id": self.agent_id,
             "agent_name": self.agent_name,
             "mode": mode,
-            "pairs": self.config.bot.trading_pairs,
+            "trading_mode": trading_mode,
+            "pairs": pairs,
             "timeframe": self.config.bot.timeframe,
+            "current_timeframe": current_tf,
             "capital_pool_pct": self.capital_pool_pct,
             "assigned_capital_usd": self._assigned_capital,
             "cycle_count": self._cycle_count,
             "started_at": self._started_at.isoformat() if self._started_at else None,
-            "open_positions": self.trade_engine.get_open_positions_count(),
+            "open_positions": open_positions,
+            "open_positions_count": len(open_positions),
+            "closed_trades_count": closed_trades_count,
+            "winning_trades": winning_trades,
+            "losing_trades": losing_trades,
+            "realized_pnl_usd": realized_pnl_usd,
+            "unrealized_pnl_usd": unrealized_pnl_total,
+            "total_pnl_usd": total_pnl_usd,
+            "total_evaluations": total_evals,
+            "eval_counts": eval_counts,
         }
+

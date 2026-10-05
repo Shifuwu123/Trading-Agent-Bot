@@ -39,3 +39,7 @@ class ExchangeConnector(ABC):
     async def close(self):
         """Cleanly close the connector session."""
         pass
+
+    async def ensure_markets_loaded(self, reload: bool = False) -> Dict[str, Any]:
+        """Ensure market metadata and precisions are loaded and cached."""
+        return {}

@@ -35,6 +35,11 @@ auth.json
 logs/
 *.csv
 *.log
+informe*/
+reporte*/
+*.pdf
+documentos*/
+reports/
 
 # Testing y Cobertura
 .pytest_cache/
@@ -49,3 +54,7 @@ htmlcov/
 *~
 .DS_Store
 Thumbs.db
+
+# Cache de Mercados y Datos
+data/cache/
+*.pkl

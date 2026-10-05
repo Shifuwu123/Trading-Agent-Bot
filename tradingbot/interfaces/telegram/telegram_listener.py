@@ -1,10 +1,11 @@
 import os
 import html
 import yaml
+import inspect
 from datetime import datetime, timedelta
 from typing import Optional
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, MenuButtonCommands
 from telegram.error import BadRequest
 from telegram.ext import (
     ApplicationBuilder,
@@ -50,14 +51,49 @@ class TelegramListener:
             ],
             [
                 InlineKeyboardButton("👝 Billetera", callback_data="nav:wallet"),
+                InlineKeyboardButton("📊 Estadísticas", callback_data="stats_h:0"),
+            ],
+        ]
+
+        if isinstance(getattr(self.bot_instance, "agents", None), dict):
+            keyboard.extend([
+                [
+                    InlineKeyboardButton("⚡ Scalper T1", callback_data="agent_view:scalper_t1"),
+                    InlineKeyboardButton("🚀 Momentum T2", callback_data="agent_view:momentum_t2"),
+                ],
+                [
+                    InlineKeyboardButton("🐋 Macro BTC/ETH", callback_data="agent_view:macro_btceth"),
+                    InlineKeyboardButton("⚠️ Especulativo T3", callback_data="agent_view:speculative_t3"),
+                ],
+            ])
+
+        keyboard.extend([
+            [
+                InlineKeyboardButton("🛡️ Bloqueos", callback_data="nav:why_block"),
                 InlineKeyboardButton("⚙️ Modo de Trading", callback_data="nav:modes"),
             ],
             [
-                InlineKeyboardButton("🛡️ Bloqueos", callback_data="nav:why_block"),
-                InlineKeyboardButton("📊 Estadísticas", callback_data="stats_h:0"),
+                toggle_button,
+            ],
+        ])
+        return InlineKeyboardMarkup(keyboard)
+
+    def _build_agent_detail_keyboard(self, agent_id: str) -> InlineKeyboardMarkup:
+        agents = getattr(self.bot_instance, "agents", {})
+        agent = agents.get(agent_id)
+        is_paused = agent.paused if agent else False
+        toggle_btn = (
+            InlineKeyboardButton("▶️ Reanudar Agente", callback_data=f"agent_resume:{agent_id}")
+            if is_paused
+            else InlineKeyboardButton("⏸️ Pausar Agente", callback_data=f"agent_pause:{agent_id}")
+        )
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Actualizar", callback_data=f"agent_view:{agent_id}"),
+                toggle_btn,
             ],
             [
-                toggle_button,
+                InlineKeyboardButton("⬅️ Volver a Estado Global", callback_data="nav:status"),
             ],
         ]
         return InlineKeyboardMarkup(keyboard)
@@ -138,9 +174,14 @@ class TelegramListener:
     # Message Payloads
     # -------------------------------------------------------------
     async def _get_status_payload(self) -> tuple[str, InlineKeyboardMarkup]:
-        state = "Pausado ⏸️" if self.bot_instance.paused else "Corriendo ▶️"
         capital_usd = await self.bot_instance.get_current_capital()
         capital_clp = self.bot_instance.clp_converter.convert_usd_to_clp(capital_usd)
+
+        if isinstance(getattr(self.bot_instance, "agents", None), dict) and hasattr(self.bot_instance, "format_global_status_message"):
+            msg = self.bot_instance.format_global_status_message(capital_usd, capital_clp)
+            return msg, self._build_status_keyboard()
+
+        state = "Pausado ⏸️" if self.bot_instance.paused else "Corriendo ▶️"
         open_pos = self.bot_instance.trade_engine.get_open_positions_count()
         current_mode = getattr(self.bot_instance.config.bot, "trading_mode", "trend").upper()
 
@@ -217,7 +258,7 @@ class TelegramListener:
         # Reporte Financiero General
         msg = (
             "📊 <b>Reporte Financiero (Flujo de Caja)</b>\n\n"
-            "💼 <b>Inversión Inicial (Base):</b> $20.00 USD\n"
+            "💼 <b>Inversión Inicial (Base):</b> $50.00 USD\n"
         )
         if summary['deposits'] > 0:
             msg += f"📥 <b>Depósitos Adicionales:</b> +${summary['deposits']:,.2f} USD\n"
@@ -313,14 +354,32 @@ class TelegramListener:
 
         session = DatabaseSession.get_session()
         try:
+            now = datetime.utcnow()
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+            total_historical = session.query(DecisionLog).filter(
+                DecisionLog.decision == "BLOCKED"
+            ).count()
+
+            today_blocked = session.query(DecisionLog).filter(
+                DecisionLog.decision == "BLOCKED",
+                DecisionLog.timestamp >= today_start
+            ).count()
+
             logs = session.query(DecisionLog).filter(
                 DecisionLog.decision == "BLOCKED"
             ).order_by(DecisionLog.timestamp.desc()).limit(10).all()
 
             if not logs:
-                return "✅ <b>No tienes operaciones bloqueadas recientes.</b>", self._build_why_block_keyboard()
+                return "✅ <b>No hay operaciones bloqueadas en la base de datos.</b>", self._build_why_block_keyboard()
 
-            msg = "🛡️ <b>Últimas Operaciones Bloqueadas</b>\n\n"
+            msg = (
+                "🛡️ <b>Últimos 10 Bloqueos de Seguridad</b>\n"
+                "<i>(Historial persistido en base de datos)</i>\n\n"
+                f"• <b>Hoy (Desde 00:00 UTC):</b> {today_blocked} bloqueos\n"
+                f"• <b>Total Histórico en BD:</b> {total_historical} eventos\n\n"
+                "<b>Eventos Recientes:</b>\n"
+            )
             for idx, log_entry in enumerate(logs, 1):
                 ts = log_entry.timestamp.strftime("%Y-%m-%d %H:%M:%S")
                 sym = html.escape(str(log_entry.symbol))
@@ -347,14 +406,15 @@ class TelegramListener:
         if not await self.verify_user(update): return
         help_text = (
             "📖 <b>Comandos Disponibles</b>\n\n"
-            "• <code>/status</code>: Ver estado general y balance\n"
+            "• <code>/status</code>: Ver estado general y detalle de todos los sub-agentes\n"
             "• <code>/wallet</code>: Detalle de billetera (saldo disponible y holdings)\n"
             "• <code>/cashflow</code>: Reporte financiero de flujo de caja y ROI\n"
             "• <code>/mode [trend|target|scalper]</code>: Cambiar modo de operación\n"
             "• <code>/stats [horas]</code>: Estadísticas de decisiones (HOLD, BUY, SELL)\n"
             "• <code>/why_block</code>: Ver últimas 10 operaciones bloqueadas por riesgo\n"
-            "• <code>/pause</code>: Pausar el ciclo de operaciones\n"
-            "• <code>/resume</code>: Reanudar el ciclo de operaciones\n"
+            "• <code>/pause</code> / <code>/resume</code>: Pausar o reanudar el sistema completo\n"
+            "• <code>/status_scalper</code>, <code>/status_momentum</code>, <code>/status_macro</code>, <code>/status_speculative</code>: Detalle por sub-agente\n"
+            "• <code>/pause_&lt;agente&gt;</code> / <code>/resume_&lt;agente&gt;</code>: Pausar o reanudar sub-agente específico (ej: <code>/resume_speculative</code>)\n"
             "• <code>/buy &lt;symbol&gt; &lt;cantidad&gt;</code>: Compra manual (Ej: <code>/buy BTC/USDT 0.01</code>)\n"
             "• <code>/sell &lt;symbol&gt; &lt;cantidad&gt;</code>: Venta manual (Ej: <code>/sell BTC/USDT 0.01</code>)\n"
             "• <code>/deposit &lt;monto&gt; [nota]</code>: Registrar depósito en cuenta simulada\n"
@@ -363,6 +423,72 @@ class TelegramListener:
         )
         await update.message.reply_text(help_text, parse_mode="HTML", reply_markup=self._build_status_keyboard())
 
+    async def status_agent_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, agent_id: str):
+        if not await self.verify_user(update): return
+        if hasattr(self.bot_instance, "format_agent_detail_message"):
+            msg = self.bot_instance.format_agent_detail_message(agent_id)
+            markup = self._build_agent_detail_keyboard(agent_id)
+            await update.message.reply_text(msg, parse_mode="HTML", reply_markup=markup)
+        else:
+            await update.message.reply_text("❌ Sistema multi-agente no está activo.", parse_mode="HTML")
+
+    async def pause_agent_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, agent_id: str):
+        if not await self.verify_user(update): return
+        if hasattr(self.bot_instance, "pause_agent"):
+            res = self.bot_instance.pause_agent(agent_id)
+            if inspect.isawaitable(res):
+                status = await res
+            else:
+                status = res or (self.bot_instance.agents[agent_id].get_status() if hasattr(self.bot_instance, "agents") and agent_id in self.bot_instance.agents else {})
+
+            registrar_log("REPORTE", f"Agente {agent_id} pausado")
+            agent_name = status.get("agent_name", agent_id)
+            mode = status.get("mode", "PASSIVE")
+            mode_tag = "🟢 ACTIVO" if mode == "ACTIVE" else "⏸️ PASSIVE"
+            strat = status.get("trading_mode", "trend").upper()
+            tf = status.get("current_timeframe", status.get("timeframe", "?"))
+            markup = self._build_agent_detail_keyboard(agent_id)
+
+            reply_msg = (
+                f"⏸️ <b>Agente {agent_name} (<code>{agent_id}</code>) pausado con éxito.</b>\n\n"
+                f"• <b>Modo en que quedó:</b> <b>{mode}</b> ({mode_tag})\n"
+                f"• <b>Estrategia:</b> <code>{strat}</code> ({tf})\n\n"
+                f"<i>Las operaciones de este sub-agente quedan suspendidas. Para reactivar: <code>/resume_{agent_id}</code></i>"
+            )
+            await update.message.reply_text(reply_msg, parse_mode="HTML", reply_markup=markup)
+        else:
+            await update.message.reply_text("❌ Sistema multi-agente no está activo.", parse_mode="HTML")
+
+    async def resume_agent_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, agent_id: str):
+        if not await self.verify_user(update): return
+        if hasattr(self.bot_instance, "resume_agent"):
+            res = self.bot_instance.resume_agent(agent_id)
+            if inspect.isawaitable(res):
+                status = await res
+            else:
+                status = res or (self.bot_instance.agents[agent_id].get_status() if hasattr(self.bot_instance, "agents") and agent_id in self.bot_instance.agents else {})
+
+            registrar_log("REPORTE", f"Agente {agent_id} reanudado")
+            agent_name = status.get("agent_name", agent_id)
+            mode = status.get("mode", "ACTIVE")
+            mode_tag = "🟢 ACTIVO" if mode == "ACTIVE" else "⏸️ PASSIVE"
+            strat = status.get("trading_mode", "trend").upper()
+            tf = status.get("current_timeframe", status.get("timeframe", "?"))
+            cap = status.get("assigned_capital_usd", 0.0)
+            cap_pct = int(status.get("capital_pool_pct", 0.0) * 100)
+            markup = self._build_agent_detail_keyboard(agent_id)
+
+            reply_msg = (
+                f"▶️ <b>Agente {agent_name} (<code>{agent_id}</code>) reanudado con éxito.</b>\n\n"
+                f"• <b>Modo en que quedó:</b> <b>{mode}</b> ({mode_tag})\n"
+                f"• <b>Estrategia:</b> <code>{strat}</code> ({tf})\n"
+                f"• <b>Capital Asignado:</b> ${cap:,.2f} USDT ({cap_pct}% del total)\n\n"
+                f"<i>El ciclo de trading evaluará oportunidades en el siguiente cierre de vela ({tf}).</i>"
+            )
+            await update.message.reply_text(reply_msg, parse_mode="HTML", reply_markup=markup)
+        else:
+            await update.message.reply_text("❌ Sistema multi-agente no está activo.", parse_mode="HTML")
+
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self.verify_user(update): return
         msg, markup = await self._get_status_payload()
@@ -370,12 +496,44 @@ class TelegramListener:
 
     async def pause_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self.verify_user(update): return
+        if context.args:
+            target = context.args[0].lower().strip()
+            alias_map = {
+                "speculative": "speculative_t3",
+                "speculative_t3": "speculative_t3",
+                "scalper": "scalper_t1",
+                "scalper_t1": "scalper_t1",
+                "momentum": "momentum_t2",
+                "momentum_t2": "momentum_t2",
+                "macro": "macro_btceth",
+                "macro_btceth": "macro_btceth",
+            }
+            if target in alias_map:
+                await self.pause_agent_command(update, context, alias_map[target])
+                return
+
         self.bot_instance.paused = True
         msg, markup = await self._get_status_payload()
         await update.message.reply_text("⏸️ <b>El bot ha sido pausado.</b>\nLas reglas de mercado no se evaluarán hasta reanudar.", parse_mode="HTML", reply_markup=markup)
 
     async def resume_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self.verify_user(update): return
+        if context.args:
+            target = context.args[0].lower().strip()
+            alias_map = {
+                "speculative": "speculative_t3",
+                "speculative_t3": "speculative_t3",
+                "scalper": "scalper_t1",
+                "scalper_t1": "scalper_t1",
+                "momentum": "momentum_t2",
+                "momentum_t2": "momentum_t2",
+                "macro": "macro_btceth",
+                "macro_btceth": "macro_btceth",
+            }
+            if target in alias_map:
+                await self.resume_agent_command(update, context, alias_map[target])
+                return
+
         self.bot_instance.paused = False
         msg, markup = await self._get_status_payload()
         await update.message.reply_text("▶️ <b>El bot ha sido reanudado.</b>\nVolviendo a operar normalmente.", parse_mode="HTML", reply_markup=markup)
@@ -622,7 +780,10 @@ class TelegramListener:
             return
 
         data = query.data or ""
-        await query.answer()
+        try:
+            await query.answer()
+        except Exception as e:
+            log.warning(f"No se pudo responder al callback_query (posiblemente expirado tras reinicio): {e}")
 
         try:
             if data == "nav:status":
@@ -708,6 +869,43 @@ class TelegramListener:
                 )
 
 
+            elif data.startswith("agent_view:"):
+                agent_id = data.split(":", 1)[1]
+                if hasattr(self.bot_instance, "format_agent_detail_message"):
+                    msg = self.bot_instance.format_agent_detail_message(agent_id)
+                    markup = self._build_agent_detail_keyboard(agent_id)
+                    await query.edit_message_text(msg, parse_mode="HTML", reply_markup=markup)
+                else:
+                    await query.answer("Modo multi-agente no disponible.", show_alert=True)
+
+            elif data.startswith("agent_pause:"):
+                agent_id = data.split(":", 1)[1]
+                if hasattr(self.bot_instance, "pause_agent"):
+                    res = self.bot_instance.pause_agent(agent_id)
+                    if inspect.isawaitable(res):
+                        await res
+                    registrar_log("REPORTE", f"Agente {agent_id} pausado")
+                    msg = self.bot_instance.format_agent_detail_message(agent_id)
+                    markup = self._build_agent_detail_keyboard(agent_id)
+                    await query.edit_message_text(msg, parse_mode="HTML", reply_markup=markup)
+                    await query.answer(f"Agente {agent_id} pausado en modo PASSIVE.")
+                else:
+                    await query.answer("Modo multi-agente no disponible.", show_alert=True)
+
+            elif data.startswith("agent_resume:"):
+                agent_id = data.split(":", 1)[1]
+                if hasattr(self.bot_instance, "resume_agent"):
+                    res = self.bot_instance.resume_agent(agent_id)
+                    if inspect.isawaitable(res):
+                        await res
+                    registrar_log("REPORTE", f"Agente {agent_id} reanudado")
+                    msg = self.bot_instance.format_agent_detail_message(agent_id)
+                    markup = self._build_agent_detail_keyboard(agent_id)
+                    await query.edit_message_text(msg, parse_mode="HTML", reply_markup=markup)
+                    await query.answer(f"Agente {agent_id} reanudado en modo ACTIVO.")
+                else:
+                    await query.answer("Modo multi-agente no disponible.", show_alert=True)
+
             elif data.startswith("order_confirm:"):
                 import time
                 order_key = data.split(":", 1)[1]
@@ -759,7 +957,31 @@ class TelegramListener:
             log.error("No Telegram token available. Cannot start listener.")
             return
 
-        app = ApplicationBuilder().token(self.token).build()
+        async def post_init(application):
+            commands = [
+                BotCommand("status", "Panel de estado general"),
+                BotCommand("wallet", "Billetera y posiciones abiertas"),
+                BotCommand("cashflow", "Flujo de caja y rentabilidad ROI"),
+                BotCommand("stats", "Estadísticas de decisiones"),
+                BotCommand("why_block", "Últimos 10 bloqueos de seguridad"),
+                BotCommand("mode", "Cambiar modo de trading"),
+                BotCommand("pause", "Pausar sistema multi-agente"),
+                BotCommand("resume", "Reanudar sistema multi-agente"),
+                BotCommand("status_scalper", "Estado Scalper (Tier 1)"),
+                BotCommand("status_momentum", "Estado Momentum (Tier 2)"),
+                BotCommand("status_macro", "Estado MacroTrader (BTC/ETH)"),
+                BotCommand("status_speculative", "Estado Speculative (Tier 3)"),
+                BotCommand("start", "Menú principal y comandos"),
+                BotCommand("help", "Ayuda de comandos"),
+            ]
+            try:
+                await application.bot.set_my_commands(commands)
+                await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+                log.info("Comandos y Menú de Telegram registrados exitosamente (set_my_commands + MenuButtonCommands).")
+            except Exception as e:
+                log.warning(f"No se pudo registrar comandos/menú en Telegram: {e}")
+
+        app = ApplicationBuilder().token(self.token).post_init(post_init).build()
 
         # Commands
         app.add_handler(CommandHandler("start", self.start_command))
@@ -779,8 +1001,35 @@ class TelegramListener:
         app.add_handler(CommandHandler("reset_pnl", self.reset_pnl_command))
         app.add_handler(CommandHandler("why_block", self.why_block_command))
 
+        # Sub-Agentes Commands
+        for aid in ["scalper_t1", "momentum_t2", "macro_btceth", "speculative_t3"]:
+            alias = aid.replace("_t1", "").replace("_t2", "").replace("_t3", "").replace("_btceth", "")
+
+            def _make_status_cb(target_id):
+                async def _cb(u, c):
+                    await self.status_agent_command(u, c, target_id)
+                return _cb
+
+            def _make_pause_cb(target_id):
+                async def _cb(u, c):
+                    await self.pause_agent_command(u, c, target_id)
+                return _cb
+
+            def _make_resume_cb(target_id):
+                async def _cb(u, c):
+                    await self.resume_agent_command(u, c, target_id)
+                return _cb
+
+            app.add_handler(CommandHandler(f"status_{aid}", _make_status_cb(aid)))
+            app.add_handler(CommandHandler(f"pause_{aid}", _make_pause_cb(aid)))
+            app.add_handler(CommandHandler(f"resume_{aid}", _make_resume_cb(aid)))
+            if alias != aid:
+                app.add_handler(CommandHandler(f"status_{alias}", _make_status_cb(aid)))
+                app.add_handler(CommandHandler(f"pause_{alias}", _make_pause_cb(aid)))
+                app.add_handler(CommandHandler(f"resume_{alias}", _make_resume_cb(aid)))
+
         # Inline Button Callbacks
         app.add_handler(CallbackQueryHandler(self.callback_handler))
 
         log.info("Iniciando modo interactivo (Polling) de Telegram con soporte HTML y Botones Inline...")
-        app.run_polling()
+        app.run_polling(drop_pending_updates=True)

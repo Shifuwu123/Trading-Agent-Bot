@@ -254,7 +254,7 @@ class PortfolioManager:
         if not wallet:
             wallet = DigitalWallet(
                 telegram_id=telegram_id,
-                balance_usd=Decimal("20.0"),
+                balance_usd=Decimal("50.0"),
                 is_paper=True
             )
             session.add(wallet)
@@ -327,7 +327,7 @@ class PortfolioManager:
             ).first()
 
             if not wallet:
-                wallet = DigitalWallet(telegram_id=telegram_id, balance_usd=Decimal("20.0"), is_paper=True)
+                wallet = DigitalWallet(telegram_id=telegram_id, balance_usd=Decimal("50.0"), is_paper=True)
                 session.add(wallet)
 
             current_balance = Decimal(str(wallet.balance_usd))
@@ -384,8 +384,8 @@ class PortfolioManager:
                 DigitalWallet.is_paper == True
             ).first()
 
-            current_balance = float(wallet.balance_usd) if wallet else 20.0
-            base_capital = 20.0 + total_deposits - total_expenses
+            current_balance = float(wallet.balance_usd) if wallet else 50.0
+            base_capital = 50.0 + total_deposits - total_expenses
             roi_pct = (total_pnl / base_capital) * 100 if base_capital > 0 else 0.0
 
             return {
@@ -624,7 +624,7 @@ class PortfolioManager:
         if not wallet:
             wallet = DigitalWallet(
                 telegram_id=telegram_id,
-                balance_usd=Decimal("20.0"),
+                balance_usd=Decimal("50.0"),
                 is_paper=True
             )
             session.add(wallet)
@@ -724,8 +724,8 @@ class PortfolioManager:
             )
             wallet = w_result.scalars().first()
 
-            current_balance = float(wallet.balance_usd) if wallet else 20.0
-            base_capital = 20.0 + total_deposits - total_expenses
+            current_balance = float(wallet.balance_usd) if wallet else 50.0
+            base_capital = 50.0 + total_deposits - total_expenses
             roi_pct = (total_pnl / base_capital) * 100 if base_capital > 0 else 0.0
 
             return {

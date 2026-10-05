@@ -8,7 +8,7 @@
 agent:
   name: "ScalperAgent_Tier1"
   agent_id: "scalper_t1"
-  capital_pool_pct: 0.50           # 50% del capital total (Escenario B sin Tier3)
+  capital_pool_pct: 0.45           # 45% del capital total (Escenario A con Tier3)
 
 bot:
   mode: "active"

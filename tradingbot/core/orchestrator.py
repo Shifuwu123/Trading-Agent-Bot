@@ -128,23 +128,23 @@ class OrchestratorBot:
                         )
                     )
                     wallet = result.scalars().first()
-                    total = float(wallet.balance_usd) if wallet else 20.0
+                    total = float(wallet.balance_usd) if wallet else 50.0
                     log.info(f"[Orchestrator] Capital total (paper): ${total:,.2f} USDT")
                     return total
             except Exception as e:
                 log.warning(f"[Orchestrator] Error obteniendo capital paper: {e}")
-                return 20.0
+                return 50.0
         else:
             connector = CCXTConnector()
             try:
                 balance = await connector.fetch_balance()
                 base = "USDT"
-                total = float(balance[base]["free"]) if base in balance else 20.0
+                total = float(balance[base]["free"]) if base in balance else 50.0
                 log.info(f"[Orchestrator] Capital total (real): ${total:,.2f} USDT")
                 return total
             except Exception as e:
                 log.warning(f"[Orchestrator] Error obteniendo capital real: {e}")
-                return 20.0
+                return 50.0
             finally:
                 await connector.close()
 
@@ -159,32 +159,59 @@ class OrchestratorBot:
             return self.agents["scalper_t1"].trade_engine
         return next(iter(self.agents.values())).trade_engine
 
-    def _assign_capital(self, total_capital: float):
-        """
-        Distribuye el capital total entre los subagentes según Escenario B.
+    def _is_speculative_active(self) -> bool:
+        """Determina si SpeculativeAgent Tier 3 está activo y listo para recibir capital."""
+        spec = self.agents.get("speculative_t3")
+        if not spec:
+            return False
+        return not spec.paused and getattr(spec.config.bot, "mode", "passive").lower() == "active"
 
-        Escenario B (sin Tier 3 activo):
-            scalper_t1:    50% → mayor exposición en el de mejor perfil riesgo/retorno
-            momentum_t2:   40% → alto potencial con volatilidad narrativa AI/L2
-            speculative_t3: 0% → inicia PASSIVE, se activa manualmente vía Telegram
-            macro_btceth:  10% → guardián de valor, pocas operaciones de alta precisión
+    def _assign_capital(self, total_capital: float, scenario_a: bool = None):
         """
-        capital_split = {
-            "scalper_t1":     total_capital * 0.50,
-            "momentum_t2":    total_capital * 0.40,
-            "speculative_t3": 0.0,   # Tier 3 inicia en PASSIVE sin capital asignado
-            "macro_btceth":   total_capital * 0.10,
-        }
+        Distribuye el capital total entre los subagentes.
+
+        Escenario A (con Tier 3 activo):
+            scalper_t1:     45%
+            momentum_t2:    35%
+            macro_btceth:   10%
+            speculative_t3: 10%
+
+        Escenario B (con Tier 3 en PASSIVE):
+            scalper_t1:     50%
+            momentum_t2:    40%
+            macro_btceth:   10%
+            speculative_t3:  0%
+        """
+        if scenario_a is None:
+            scenario_a = self._is_speculative_active()
+
+        if scenario_a:
+            capital_split = {
+                "scalper_t1":     total_capital * 0.45,
+                "momentum_t2":    total_capital * 0.35,
+                "macro_btceth":   total_capital * 0.10,
+                "speculative_t3": total_capital * 0.10,
+            }
+            scenario_name = "Escenario A (Speculative ACTIVO)"
+        else:
+            capital_split = {
+                "scalper_t1":     total_capital * 0.50,
+                "momentum_t2":    total_capital * 0.40,
+                "macro_btceth":   total_capital * 0.10,
+                "speculative_t3": 0.0,
+            }
+            scenario_name = "Escenario B (Speculative PASSIVE)"
 
         for agent_id, capital in capital_split.items():
-            self.agents[agent_id].set_capital(capital)
+            if agent_id in self.agents:
+                self.agents[agent_id].set_capital(capital)
 
         log.info(
-            f"[Orchestrator] Capital distribuido (Escenario B):\n"
-            f"  ScalperAgent T1:    ${capital_split['scalper_t1']:,.2f} USDT (50%)\n"
-            f"  MomentumAgent T2:   ${capital_split['momentum_t2']:,.2f} USDT (40%)\n"
-            f"  SpeculativeAgent T3: $0.00 USDT (0% — PASSIVE)\n"
-            f"  MacroTrader BTC/ETH: ${capital_split['macro_btceth']:,.2f} USDT (10%)"
+            f"[Orchestrator] Capital distribuido ({scenario_name}):\n"
+            f"  ScalperAgent T1:    ${capital_split.get('scalper_t1', 0):,.2f} USDT\n"
+            f"  MomentumAgent T2:   ${capital_split.get('momentum_t2', 0):,.2f} USDT\n"
+            f"  SpeculativeAgent T3: ${capital_split.get('speculative_t3', 0):,.2f} USDT\n"
+            f"  MacroTrader BTC/ETH: ${capital_split.get('macro_btceth', 0):,.2f} USDT"
         )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -203,17 +230,28 @@ class OrchestratorBot:
 
         # Obtener capital y distribuir
         total_capital = asyncio.run(self._fetch_total_capital())
-        self._assign_capital(total_capital)
+        is_spec_active = self._is_speculative_active()
+        self._assign_capital(total_capital, scenario_a=is_spec_active)
+
+        scenario_label = "Escenario A" if is_spec_active else "Escenario B"
+        spec_desc = (
+            f"${total_capital*0.10:,.2f} (10% — 🟢 ACTIVO)"
+            if is_spec_active
+            else "$0 (PASSIVE — activar con /resume_speculative)"
+        )
+        scalper_desc = f"${self.agents['scalper_t1']._assigned_capital:,.2f} ({int(self.agents['scalper_t1'].capital_pool_pct*100)}%)" if 'scalper_t1' in self.agents else ""
+        momentum_desc = f"${self.agents['momentum_t2']._assigned_capital:,.2f} ({int(self.agents['momentum_t2'].capital_pool_pct*100)}%)" if 'momentum_t2' in self.agents else ""
+        macro_desc = f"${self.agents['macro_btceth']._assigned_capital:,.2f} ({int(self.agents['macro_btceth'].capital_pool_pct*100)}%)" if 'macro_btceth' in self.agents else ""
 
         # Notificación de arranque
         self.notifier.send_message(
             "🚀 <b>Sistema Multi-Agente iniciado</b>\n\n"
             f"💰 Capital total: <b>${total_capital:,.2f} USDT</b>\n\n"
-            "📊 <b>Distribución (Escenario B):</b>\n"
-            f"  • ScalperAgent T1: ${total_capital*0.50:,.2f} (50%)\n"
-            f"  • MomentumAgent T2: ${total_capital*0.40:,.2f} (40%)\n"
-            f"  • MacroTrader BTC/ETH: ${total_capital*0.10:,.2f} (10%)\n"
-            f"  • SpeculativeAgent T3: $0 (PASSIVE — activar con /resume_speculative)\n\n"
+            f"📊 <b>Distribución ({scenario_label}):</b>\n"
+            f"  • ScalperAgent T1: {scalper_desc}\n"
+            f"  • MomentumAgent T2: {momentum_desc}\n"
+            f"  • MacroTrader BTC/ETH: {macro_desc}\n"
+            f"  • SpeculativeAgent T3: {spec_desc}\n\n"
             "Use /status para ver el estado global."
         )
 
@@ -253,31 +291,38 @@ class OrchestratorBot:
         self.agents[agent_id].stop()
         log.info(f"[Orchestrator] {agent_id} detenido manualmente.")
 
-    def pause_agent(self, agent_id: str):
+    async def pause_agent(self, agent_id: str) -> dict:
         """Pausa un subagente (mantiene scheduler activo, omite ejecuciones)."""
         if agent_id not in self.agents:
-            return
+            return {}
         self.agents[agent_id].pause()
+        if agent_id == "speculative_t3":
+            total = await self._fetch_total_capital()
+            self._assign_capital(total, scenario_a=False)
+            log.info("[Orchestrator] SpeculativeAgent T3 pausado. Capital redistribuido a Escenario B.")
+        return self.agents[agent_id].get_status()
 
-    def resume_agent(self, agent_id: str):
+    async def resume_agent(self, agent_id: str) -> dict:
         """
         Reactiva un subagente pausado.
-        Para SpeculativeAgent T3: asigna su capital (10%) antes de reanudar.
+        Para SpeculativeAgent T3: rebalancea el capital a Escenario A (10%).
         """
         if agent_id not in self.agents:
-            return
-
-        # Si es Tier 3 y capital es 0, asignar capital del pool
-        if agent_id == "speculative_t3" and self.agents[agent_id]._assigned_capital == 0:
-            total = asyncio.run(self._fetch_total_capital())
-            speculative_capital = total * 0.10
-            self.agents[agent_id].set_capital(speculative_capital)
-            log.info(
-                f"[Orchestrator] SpeculativeAgent T3 activado con "
-                f"${speculative_capital:,.2f} USDT (10% del capital total)"
-            )
+            return {}
 
         self.agents[agent_id].resume()
+
+        # Si se reactiva Tier 3, rebalancear a Escenario A
+        if agent_id == "speculative_t3":
+            total = await self._fetch_total_capital()
+            self._assign_capital(total, scenario_a=True)
+            spec_cap = total * 0.10
+            log.info(
+                f"[Orchestrator] SpeculativeAgent T3 activado. Capital rebalanceado a Escenario A "
+                f"(${spec_cap:,.2f} USDT / 10% de ${total:,.2f})"
+            )
+
+        return self.agents[agent_id].get_status()
 
     async def execute_manual_order(self, symbol: str, side: str, amount: float):
         """
@@ -349,46 +394,214 @@ class OrchestratorBot:
 
         return status
 
-    def format_global_status_message(self) -> str:
-        """Genera el mensaje de Telegram con el panel global del sistema."""
+    def format_global_status_message(self, capital_usd: float = None, capital_clp: float = None) -> str:
+        """Genera el mensaje de Telegram con el panel global y detallado de cada subagente."""
         status = self.get_global_status()
-        uptime = ""
-        if self._started_at:
-            delta = datetime.utcnow() - self._started_at
-            hours, rem = divmod(int(delta.total_seconds()), 3600)
-            mins, secs = divmod(rem, 60)
-            uptime = f"{hours}h {mins}m {secs}s"
+        state = "Pausado ⏸️" if self.paused else "Corriendo ▶️"
+
+        if capital_usd is None:
+            try:
+                capital_usd = asyncio.run(self._fetch_total_capital())
+            except Exception:
+                capital_usd = 50.0
+        if capital_clp is None:
+            capital_clp = self.clp_converter.convert_usd_to_clp(capital_usd)
+
+        total_open_positions = 0
+        active_agents = 0
+        for agent_status in status["agents"].values():
+            if not isinstance(agent_status, dict) or "error" in agent_status:
+                continue
+            total_open_positions += agent_status.get("open_positions_count", 0)
+            if agent_status.get("mode") == "ACTIVE":
+                active_agents += 1
 
         lines = [
-            "🧠 <b>Sistema Multi-Agente — Estado Global</b>",
-            f"⏱️ Uptime: <code>{uptime}</code>\n",
+            "📊 <b>Estado del Bot (Multi-Agente)</b>\n",
+            f"• <b>Estado Global:</b> {state}",
+            f"• <b>Capital Estimado:</b> ${capital_usd:,.2f} USD <i>(${capital_clp:,.0f} CLP)</i>",
+            f"• <b>Posiciones Abiertas:</b> {total_open_positions}",
+            f"• <b>Agentes Activos:</b> {active_agents} / {len(self.agents)}\n",
         ]
 
         icons = {
-            "scalper_t1":     "📡",
+            "scalper_t1":     "⚡",
             "momentum_t2":    "🚀",
-            "speculative_t3": "⚠️",
             "macro_btceth":   "🐋",
+            "speculative_t3": "⚠️",
         }
 
         for agent_id, agent_status in status["agents"].items():
             if "error" in agent_status:
-                lines.append(f"{icons.get(agent_id, '❓')} <b>{agent_id}</b>: ❌ Error")
+                lines.append(f"━━━━━━━━━━━━━━━━━━━\n{icons.get(agent_id, '❓')} <b>{agent_id}</b>: ❌ Error: {agent_status['error']}")
                 continue
 
-            mode_emoji = "🟢" if agent_status["mode"] == "ACTIVE" else "⏸️"
-            capital = agent_status.get("assigned_capital_usd", 0)
+            icon = icons.get(agent_id, "🤖")
+            agent_name = agent_status.get("agent_name", agent_id)
+            mode = agent_status.get("mode", "ACTIVE")
+            mode_tag = "🟢 ACTIVO" if mode == "ACTIVE" else "⏸️ PASSIVE"
+            strat_mode = agent_status.get("trading_mode", "trend").upper()
+            tf = agent_status.get("current_timeframe", agent_status.get("timeframe", "?"))
+            capital = agent_status.get("assigned_capital_usd", 0.0)
+            cap_pct = int(agent_status.get("capital_pool_pct", 0.0) * 100)
+
+            raw_pairs = agent_status.get("pairs", [])
+            pairs_short = ", ".join([p.split("/")[0] for p in raw_pairs])
+
+            # Operando
+            open_pos_list = agent_status.get("open_positions", [])
+            pos_desc_list = []
+            for op in open_pos_list:
+                sym = op.get("symbol", "")
+                qty = op.get("quantity", 0.0)
+                entry_px = op.get("entry_price", 0.0)
+                u_pnl = op.get("unrealized_pnl", 0.0)
+                u_pct = op.get("unrealized_pnl_pct", 0.0)
+                pnl_sign = "+" if u_pnl >= 0 else ""
+                pos_desc_list.append(
+                    f"{sym} ({qty:.4f} @ ${entry_px:,.2f} | Flotante: {pnl_sign}${u_pnl:,.2f} / {pnl_sign}{u_pct:.2f}%)"
+                )
+
+            # Ganado / Perdido
+            realized_pnl = agent_status.get("realized_pnl_usd", 0.0)
+            unrealized_pnl = agent_status.get("unrealized_pnl_usd", 0.0)
+            total_pnl = agent_status.get("total_pnl_usd", 0.0)
+            closed_count = agent_status.get("closed_trades_count", 0)
+            win_count = agent_status.get("winning_trades", 0)
+            loss_count = agent_status.get("losing_trades", 0)
+
+            t_sign = "+" if total_pnl > 0 else ""
+            r_sign = "+" if realized_pnl > 0 else ""
+            u_sign = "+" if unrealized_pnl > 0 else ""
+
+            if closed_count > 0:
+                pnl_line = (
+                    f"• <b>Ganado/Perdido:</b> {t_sign}${total_pnl:,.2f} USD "
+                    f"<i>(Realizado: {r_sign}${realized_pnl:,.2f} [{win_count}W/{loss_count}L] | Flotante: {u_sign}${unrealized_pnl:,.2f})</i>"
+                )
+            else:
+                pnl_line = (
+                    f"• <b>Ganado/Perdido:</b> {t_sign}${total_pnl:,.2f} USD "
+                    f"<i>(Realizado: $0.00 | Flotante: {u_sign}${unrealized_pnl:,.2f})</i>"
+                )
+
+            # Evaluaciones
             cycles = agent_status.get("cycle_count", 0)
-            pairs = ", ".join(agent_status.get("pairs", []))
-            tf = agent_status.get("timeframe", "?")
-            positions = agent_status.get("open_positions", 0)
+            total_evals = agent_status.get("total_evaluations", 0)
+            eval_counts = agent_status.get("eval_counts", {})
 
-            lines.append(
-                f"{icons.get(agent_id, '❓')} <b>{agent_status['agent_name']}</b>\n"
-                f"   {mode_emoji} {agent_status['mode']} | 💵 ${capital:,.0f} | "
-                f"🔄 {cycles} ciclos | 📂 {positions} pos\n"
-                f"   📊 {tf} | {pairs}"
-            )
+            lines.append("━━━━━━━━━━━━━━━━━━━")
+            lines.append(f"{icon} <b>{agent_name}</b> ({mode_tag})")
 
-        lines.append("\n<i>Use /status_scalper, /status_momentum, /status_macro para detalle.</i>")
+            # 1. Operando
+            if mode == "PASSIVE":
+                if agent_id == "speculative_t3":
+                    operando_desc = "⚪ Inactivo (Activar con /resume_speculative)"
+                else:
+                    operando_desc = "⏸️ Pausado (Modo PASSIVE)"
+            elif not pos_desc_list:
+                operando_desc = "⚪ En liquidez (Sin posiciones)"
+            else:
+                operando_desc = "🟢 " + ", ".join(pos_desc_list)
+            lines.append(f"• <b>Operando:</b> {operando_desc}")
+
+            # 2. Ganado / Perdido
+            lines.append(pnl_line)
+
+            # 3. Evaluaciones
+            if mode == "PASSIVE" or total_evals == 0:
+                lines.append("• <b>Evaluaciones:</b> 0")
+            else:
+                lines.append(f"• <b>Evaluaciones:</b> {total_evals:,} en {cycles} ciclos")
+
+        lines.append("\n💡 <i>Para ver pares, estrategia y detalle de un agente, usa los botones abajo o /status_&lt;agente&gt;.</i>")
         return "\n".join(lines)
+
+    def format_agent_detail_message(self, agent_id: str) -> str:
+        """Genera el mensaje detallado para un subagente individual."""
+        if agent_id not in self.agents:
+            return f"❌ Agente <code>{agent_id}</code> no encontrado."
+
+        agent = self.agents[agent_id]
+        status = agent.get_status()
+
+        icons = {
+            "scalper_t1":     "⚡",
+            "momentum_t2":    "🚀",
+            "macro_btceth":   "🐋",
+            "speculative_t3": "⚠️",
+        }
+        icon = icons.get(agent_id, "🤖")
+        mode = status.get("mode", "ACTIVE")
+        mode_tag = "🟢 ACTIVO" if mode == "ACTIVE" else "⏸️ PASSIVE"
+        strat_mode = status.get("trading_mode", "trend").upper()
+        tf = status.get("current_timeframe", status.get("timeframe", "?"))
+        capital = status.get("assigned_capital_usd", 0.0)
+        cap_pct = int(status.get("capital_pool_pct", 0.0) * 100)
+
+        lines = [
+            f"{icon} <b>Detalle del Sub-Agente: {status.get('agent_name', agent_id)}</b>\n",
+            f"• <b>Estado:</b> {mode_tag}",
+            f"• <b>Estrategia:</b> <code>{strat_mode}</code>",
+            f"• <b>Timeframe:</b> <code>{tf}</code>",
+            f"• <b>Capital Asignado:</b> ${capital:,.2f} USDT ({cap_pct}% del total)",
+            f"• <b>Ciclos Ejecutados:</b> {status.get('cycle_count', 0):,}\n",
+            "📋 <b>Pares Asignados:</b>",
+        ]
+
+        from tradingbot.database.models import Portfolio
+        from tradingbot.execution.portfolio_manager import DatabaseSession
+        session = DatabaseSession.get_session()
+        try:
+            portfolio_map = {p.asset: float(p.current_price or 0.0) for p in session.query(Portfolio).all()}
+            for p in status.get("pairs", []):
+                base = p.split("/")[0]
+                px = portfolio_map.get(base, 0.0)
+                px_str = f"${px:,.4f}" if px > 0 else "N/A"
+                lines.append(f"  • <code>{p}</code>: {px_str}")
+        finally:
+            session.close()
+
+        open_pos = status.get("open_positions", [])
+        lines.append(f"\n📂 <b>Posiciones Abiertas ({len(open_pos)}):</b>")
+        if not open_pos:
+            lines.append("  <i>Ninguna. El agente está en liquidez 100% USDT.</i>")
+        else:
+            for op in open_pos:
+                u_pnl = op.get("unrealized_pnl", 0.0)
+                u_pct = op.get("unrealized_pnl_pct", 0.0)
+                pnl_sign = "+" if u_pnl >= 0 else ""
+                lines.append(
+                    f"  • 🟢 <b>{op.get('symbol')}</b> ({op.get('side')}): {op.get('quantity'):.4f}\n"
+                    f"    Entrada: ${op.get('entry_price'):,.2f} | Actual: ${op.get('current_price'):,.2f}\n"
+                    f"    PnL Flotante: <b>{pnl_sign}${u_pnl:,.2f} USD ({pnl_sign}{u_pct:.2f}%)</b>"
+                )
+
+        realized = status.get("realized_pnl_usd", 0.0)
+        unrealized = status.get("unrealized_pnl_usd", 0.0)
+        total = status.get("total_pnl_usd", 0.0)
+        closed_count = status.get("closed_trades_count", 0)
+        win_count = status.get("winning_trades", 0)
+        loss_count = status.get("losing_trades", 0)
+        win_rate = (win_count / closed_count * 100) if closed_count > 0 else 0.0
+
+        r_sign = "+" if realized > 0 else ""
+        u_sign = "+" if unrealized > 0 else ""
+        t_sign = "+" if total > 0 else ""
+
+        lines.append("\n💰 <b>Rendimiento y PnL:</b>")
+        lines.append(f"  • <b>PnL Total Neto:</b> {t_sign}${total:,.2f} USD")
+        lines.append(f"  • <b>Ganancias Realizadas:</b> {r_sign}${realized:,.2f} USD ({closed_count} trades)")
+        lines.append(f"  • <b>Ganancias Flotantes:</b> {u_sign}${unrealized:,.2f} USD")
+        lines.append(f"  • <b>Win Rate:</b> {win_rate:.1f}% ({win_count} ganados / {loss_count} perdidos)")
+
+        eval_counts = status.get("eval_counts", {})
+        total_evals = status.get("total_evaluations", 0)
+        lines.append("\n📊 <b>Evaluaciones de Mercado:</b>")
+        lines.append(f"  • <b>Total Evaluaciones:</b> {total_evals:,}")
+        for k, v in eval_counts.items():
+            if v > 0:
+                lines.append(f"    └ {k}: {v:,}")
+
+        return "\n".join(lines)
+

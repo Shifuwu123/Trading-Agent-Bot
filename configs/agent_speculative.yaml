@@ -11,11 +11,10 @@
 agent:
   name: "SpeculativeAgent_Tier3"
   agent_id: "speculative_t3"
-  capital_pool_pct: 0.00           # 0% capital en Escenario B (sin Tier3 activo)
-  # capital_pool_pct: 0.10         # Activar cuando se migre a Escenario A
+  capital_pool_pct: 0.10           # 10% capital en Escenario A
 
 bot:
-  mode: "passive"                  # ← PASSIVE por defecto — NO opera hasta /resume_speculative
+  mode: "active"                   # ← ACTIVADO (Escenario A)
   trading_mode: "scalper"
   timeframe: "15m"                 # Velas largas para filtrar spikes falsos
 

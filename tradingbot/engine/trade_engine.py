@@ -1,4 +1,5 @@
 import traceback
+import ccxt
 from sqlalchemy import select
 from tradingbot.core.config import AppConfig
 from tradingbot.engine.risk_manager import RiskManager
@@ -114,6 +115,9 @@ class TradeEngine:
                 return {'symbol': symbol, 'decision': signal, 'reason': f"Ejecutado a {current_price} USD"}
             else:
                 return {'symbol': symbol, 'decision': 'HOLD', 'reason': 'No action needed'}
+        except (ccxt.RequestTimeout, ccxt.NetworkError, TimeoutError) as ne:
+            log.warning(f"Error transitorio de red/timeout procesando {symbol}: {ne}")
+            return {'symbol': symbol, 'decision': 'HOLD', 'reason': f"Network timeout transitorio ({type(ne).__name__})"}
         except Exception as e:
             log.error(f"Error processing {symbol}: {e}")
             self.notifier.send_error_alert(f"Error processing {symbol}:\n{traceback.format_exc()}")

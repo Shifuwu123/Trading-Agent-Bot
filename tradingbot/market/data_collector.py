@@ -1,4 +1,5 @@
 import pandas as pd
+import ccxt
 from typing import Optional
 from decimal import Decimal
 from sqlalchemy import select
@@ -46,6 +47,9 @@ class DataCollector:
             log.info(f"Successfully collected and processed {len(df)} rows of data for {symbol}")
             return df
             
+        except (ccxt.RequestTimeout, ccxt.NetworkError) as e:
+            log.warning(f"Conectividad transitoria fallida al obtener velas para {symbol} ({timeframe}): {e}")
+            raise
         except Exception as e:
             log.error(f"Failed to collect historical data for {symbol}: {e}")
             raise

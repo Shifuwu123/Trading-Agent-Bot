@@ -37,20 +37,35 @@ class SpeculativeAgent(BaseAgent):
         return EMACrossoverStrategy(fast_period=fast, slow_period=slow)
 
     def start(self):
-        """Override: fuerza modo PASSIVE independientemente del config."""
-        # El Tier 3 SIEMPRE arranca en PASSIVE (Recomendación #3)
-        self.config.bot.mode = "passive"
-        self.paused = True
-        log.info("[SpeculativeAgent] Forzado a modo PASSIVE al inicio (Recomendación #3).")
+        """Inicia el subagente especulativo respetando el modo configurado."""
+        mode = getattr(self.config.bot, "mode", "passive").lower()
+        if mode == "active":
+            self.paused = False
+            log.info("[SpeculativeAgent] Modo ACTIVE configurado al inicio.")
+        else:
+            self.config.bot.mode = "passive"
+            self.paused = True
+            log.info("[SpeculativeAgent] Modo PASSIVE configurado al inicio.")
         super().start()
 
     def resume(self):
-        """Override: notifica al usuario cuando se activa manualmente."""
+        """Override: reactiva el agente y notifica al usuario."""
         super().resume()
+        self.config.bot.mode = "active"
         self.notifier.send_message(
             "⚡ <b>SpeculativeAgent Tier 3 ACTIVADO</b>\n\n"
-            "El agente especulativo ha sido activado manualmente.\n"
+            "El agente especulativo ha sido activado.\n"
             "Monedas: BEAMX/USDT, MUBARAK/USDT\n"
             "⚠️ <b>Alto riesgo</b> — monitorear de cerca.\n"
             "Para pausar: <code>/pause_speculative</code>"
+        )
+
+    def pause(self):
+        """Override: pausa el agente especulativo y notifica."""
+        super().pause()
+        self.config.bot.mode = "passive"
+        self.notifier.send_message(
+            "⏸️ <b>SpeculativeAgent Tier 3 PAUSADO</b>\n\n"
+            "El agente especulativo ha sido pausado (modo PASSIVE).\n"
+            "Para reactivar: <code>/resume_speculative</code>"
         )
