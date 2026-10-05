@@ -1,5 +1,8 @@
 import pandas as pd
+import ccxt
 from typing import Optional
+from decimal import Decimal
+from sqlalchemy import select
 from tradingbot.market.connector import ExchangeConnector
 from tradingbot.utils.logger import log
 from tradingbot.database.models import Candle
@@ -38,22 +41,61 @@ class DataCollector:
             # Set the timestamp as the DataFrame index
             df.set_index('timestamp', inplace=True)
             
-            # Save to dataset for future ML training
-            self._save_to_db(df, symbol, timeframe)
+            # Save to dataset for future ML training asynchronously
+            await self._save_to_db_async(df, symbol, timeframe)
             
             log.info(f"Successfully collected and processed {len(df)} rows of data for {symbol}")
             return df
             
+        except (ccxt.RequestTimeout, ccxt.NetworkError) as e:
+            log.warning(f"Conectividad transitoria fallida al obtener velas para {symbol} ({timeframe}): {e}")
+            raise
         except Exception as e:
             log.error(f"Failed to collect historical data for {symbol}: {e}")
-            # Depending on use-case, you might want to raise the exception or return empty df
             raise
 
+    async def _save_to_db_async(self, df: pd.DataFrame, symbol: str, timeframe: str):
+        """Guarda nuevas velas en la base de datos de forma asíncrona para ML (ignora duplicados)."""
+        try:
+            async with DatabaseSession.get_async_session() as session:
+                result = await session.execute(
+                    select(Candle).filter(
+                        Candle.symbol == symbol,
+                        Candle.timeframe == timeframe
+                    ).order_by(Candle.timestamp.desc()).limit(1)
+                )
+                latest_candle = result.scalars().first()
+                latest_ts = latest_candle.timestamp if latest_candle else None
+
+                if latest_ts:
+                    df_new = df[df.index > latest_ts].copy()
+                else:
+                    df_new = df.copy()
+
+                if not df_new.empty:
+                    candles = [
+                        Candle(
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            timestamp=ts.to_pydatetime() if hasattr(ts, 'to_pydatetime') else ts,
+                            open=Decimal(str(row['open'])),
+                            high=Decimal(str(row['high'])),
+                            low=Decimal(str(row['low'])),
+                            close=Decimal(str(row['close'])),
+                            volume=Decimal(str(row['volume']))
+                        )
+                        for ts, row in df_new.iterrows()
+                    ]
+                    session.add_all(candles)
+                    await session.commit()
+                    log.info(f"[AsyncDB] Saved {len(candles)} new historical candles to dataset for {symbol}")
+        except Exception as e:
+            log.error(f"[AsyncDB] Failed to save ML dataset: {e}")
+
     def _save_to_db(self, df: pd.DataFrame, symbol: str, timeframe: str):
-        """Guarda nuevas velas en la base de datos SQLite para ML (ignora duplicados)."""
+        """Guarda nuevas velas en la base de datos (fallback sincrónico)."""
         session = DatabaseSession.get_session()
         try:
-            # Check the latest timestamp in DB for this symbol/timeframe
             latest_candle = session.query(Candle).filter(
                 Candle.symbol == symbol,
                 Candle.timeframe == timeframe

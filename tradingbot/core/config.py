@@ -26,7 +26,7 @@ class BotConfig(BaseModel):
     fiat_currency: str = "CLP"
 
 class RiskConfig(BaseModel):
-    max_open_positions: int = 3
+    max_open_positions: int = 20
     max_capital_exposure_pct: float = 0.30
     reserve_capital_pct: float = 0.30
     max_loss_per_trade_pct: float = 0.02
@@ -35,8 +35,15 @@ class RiskConfig(BaseModel):
     default_take_profit_pct: float = 0.04
     trailing_stop: bool = True
     trailing_stop_positive: float = 0.02
+    min_order_usd: float = 5.0
+
+class AgentMetadataConfig(BaseModel):
+    name: str = "UnnamedAgent"
+    agent_id: str = "unknown"
+    capital_pool_pct: float = 0.0
 
 class AppConfig(BaseModel):
+    agent: Optional[AgentMetadataConfig] = None
     bot: BotConfig
     risk: RiskConfig
     # Se pueden agregar strategies y scheduler después

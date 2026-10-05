@@ -194,6 +194,10 @@ def test_reset_pnl_method():
     pm = PortfolioManager()
     session = DatabaseSession.get_session()
     try:
+        # Clean up existing test trade if present
+        session.query(Trade).filter(Trade.trade_id == "mock_test_reset_trade").delete()
+        session.commit()
+
         # Create a test closed trade
         test_trade = Trade(
             trade_id="mock_test_reset_trade",

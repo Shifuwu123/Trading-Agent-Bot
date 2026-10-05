@@ -26,6 +26,7 @@ class Trade(Base):
     closed_at = Column(DateTime, nullable=True)
     exchange = Column(String)
     is_paper = Column(Boolean, default=True)
+    agent_id = Column(String, default="legacy", nullable=True)
 
 class Portfolio(Base):
     __tablename__ = 'portfolio'
@@ -39,6 +40,7 @@ class Portfolio(Base):
     unrealized_pnl = Column(Numeric(18, 8), default=0.0)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_paper = Column(Boolean, default=True)
+    agent_id = Column(String, default="legacy", nullable=True)
     
     __table_args__ = (UniqueConstraint('asset', 'is_paper', name='_asset_paper_uc'),)
 class DigitalWallet(Base):
@@ -46,7 +48,7 @@ class DigitalWallet(Base):
     
     id = Column(Integer, primary_key=True)
     telegram_id = Column(String, index=True)
-    balance_usd = Column(Numeric(18, 8), default=10000.0)
+    balance_usd = Column(Numeric(18, 8), default=50.0)
     is_paper = Column(Boolean, default=True)
     
     __table_args__ = (UniqueConstraint('telegram_id', 'is_paper', name='_telegram_paper_uc'),)
