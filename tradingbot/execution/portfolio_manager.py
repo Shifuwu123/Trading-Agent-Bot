@@ -4,7 +4,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from typing import Dict, Any, Optional
 from decimal import Decimal
 
-from tradingbot.database.models import Trade, Portfolio, DigitalWallet, Candle, DecisionLog, CashFlow, Base
+from tradingbot.database.models import Trade, Portfolio, DigitalWallet, Candle, DecisionLog, CashFlow, BotCommand, Base
 from tradingbot.core.config import get_settings
 from tradingbot.utils.logger import log
 

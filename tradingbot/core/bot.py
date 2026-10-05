@@ -9,7 +9,7 @@ from tradingbot.market.data_collector import DataCollector
 from tradingbot.strategies.ema_crossover import EMACrossoverStrategy
 from tradingbot.execution.order_executor import OrderExecutor
 from tradingbot.execution.portfolio_manager import PortfolioManager, DatabaseSession
-from tradingbot.database.models import Trade
+from tradingbot.database.models import Trade, BotCommand
 from tradingbot.utils.logger import log, registrar_log
 from tradingbot.interfaces.telegram.notifier import TelegramNotifier
 from tradingbot.utils.clp_converter import CLPConverter
@@ -158,16 +158,10 @@ class TradingBot:
     def _process_dashboard_commands(self):
         session = DatabaseSession.get_session()
         try:
-            # Revisa si la tabla existe
-            cursor = session.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='bot_commands'")
-            if not cursor.fetchone():
-                return
-                
-            commands = session.execute("SELECT id, command, args FROM bot_commands WHERE status='PENDING' ORDER BY id ASC").fetchall()
+            commands = session.query(BotCommand).filter(BotCommand.status == 'PENDING').order_by(BotCommand.id.asc()).all()
             for cmd in commands:
-                c_id = cmd[0]
-                c_name = cmd[1].upper()
-                c_args = cmd[2]
+                c_name = cmd.command.upper()
+                c_args = cmd.args
                 
                 if c_name == 'PAUSE':
                     self.paused = True
@@ -191,7 +185,7 @@ class TradingBot:
                             log.error(f"Error persisting mode: {e}")
                         log.info(f"DASHBOARD CMD: Mode changed to {c_args}")
                 
-                session.execute(f"UPDATE bot_commands SET status='PROCESSED' WHERE id={c_id}")
+                cmd.status = 'PROCESSED'
             session.commit()
         except Exception as e:
             log.error(f"Error in dashboard command processor: {e}")

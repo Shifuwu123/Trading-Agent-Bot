@@ -92,3 +92,13 @@ class CashFlow(Base):
     amount_usd = Column(Numeric(18, 8), nullable=False)
     description = Column(String, nullable=True)
     is_paper = Column(Boolean, default=True)
+
+class BotCommand(Base):
+    __tablename__ = 'bot_commands'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    command = Column(String, nullable=False)
+    args = Column(String, nullable=True)
+    status = Column(String, default="PENDING")
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
