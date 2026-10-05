@@ -44,7 +44,7 @@ bot:
 
 risk:
   # Número máximo de posiciones simultáneas que el bot tiene permitido mantener abiertas.
-  max_open_positions: 10
+  max_open_positions: 20
   
   # Porcentaje máximo del capital total (0.30 = 30%) que el bot tiene permitido gastar sumando todas sus operaciones.
   max_capital_exposure_pct: 1.00

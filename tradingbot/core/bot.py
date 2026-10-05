@@ -144,26 +144,7 @@ class TradingBot:
         executor = OrderExecutor(connector)
         try:
              res = await executor.execute_order(symbol, side, amount, "MARKET")
-             session = DatabaseSession.get_session()
-             try:
-                 opposite_side = "BUY" if side == "SELL" else "SELL"
-                 open_trades = session.query(Trade).filter(
-                     Trade.symbol == symbol,
-                     Trade.status == "OPEN",
-                     Trade.side == opposite_side
-                 ).all()
-             finally:
-                 session.close()
-
-             if open_trades and side == "SELL":
-                 remaining = amount
-                 for ot in open_trades:
-                     if remaining <= 0:
-                         break
-                     self.portfolio_manager.record_close_trade(ot.trade_id, res)
-                     remaining -= float(ot.quantity)
-             else:
-                 self.portfolio_manager.record_open_trade(res, strategy=f"MANUAL_{side}")
+             self.portfolio_manager.record_open_trade(res, strategy=f"MANUAL_{side}")
              return res
         finally:
              await connector.close()
@@ -174,15 +155,61 @@ class TradingBot:
         except Exception as e:
             log.error(f"Error in sync runner: {e}")
 
+    def _process_dashboard_commands(self):
+        session = DatabaseSession.get_session()
+        try:
+            # Revisa si la tabla existe
+            cursor = session.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='bot_commands'")
+            if not cursor.fetchone():
+                return
+                
+            commands = session.execute("SELECT id, command, args FROM bot_commands WHERE status='PENDING' ORDER BY id ASC").fetchall()
+            for cmd in commands:
+                c_id = cmd[0]
+                c_name = cmd[1].upper()
+                c_args = cmd[2]
+                
+                if c_name == 'PAUSE':
+                    self.paused = True
+                    log.info("DASHBOARD CMD: Bot paused.")
+                elif c_name == 'RESUME':
+                    self.paused = False
+                    log.info("DASHBOARD CMD: Bot resumed.")
+                elif c_name == 'MODE':
+                    if c_args in ['trend', 'target', 'scalper']:
+                        self.config.bot.trading_mode = c_args
+                        # Persist to config.yaml...
+                        try:
+                            import yaml
+                            with open("config.yaml", "r") as f:
+                                data = yaml.safe_load(f)
+                            if "bot" in data:
+                                data["bot"]["trading_mode"] = c_args
+                            with open("config.yaml", "w") as f:
+                                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+                        except Exception as e:
+                            log.error(f"Error persisting mode: {e}")
+                        log.info(f"DASHBOARD CMD: Mode changed to {c_args}")
+                
+                session.execute(f"UPDATE bot_commands SET status='PROCESSED' WHERE id={c_id}")
+            session.commit()
+        except Exception as e:
+            log.error(f"Error in dashboard command processor: {e}")
+        finally:
+            session.close()
+
     def start(self):
         log.info("Starting TradingBot Scheduler...")
         try:
-            self.notifier.send_message("🚀 <b>TradingBot iniciado exitosamente!</b>\n⚙️ El bot ha arrancado y está operando. Evaluando el mercado...\nUsa /status para ver comandos.")
+            self.notifier.send_message("🚀 *TradingBot iniciado exitosamente!*\n⚙️ El bot ha arrancado y está operando. Evaluando el mercado...\nUsa /status para ver comandos.")
             
-            # Iniciar el scheduler primero
+            # Iniciar el scheduler principal (cada minuto)
             self.scheduler.add_job(self._run_cycle_sync, 'interval', minutes=1)
             
-            # Correr run_cycle inmediatamente en el hilo actual antes de soltarlo (opcional, o podemos correrlo sync)
+            # Iniciar el scheduler del Dashboard Commands (cada 5 segundos)
+            self.scheduler.add_job(self._process_dashboard_commands, 'interval', seconds=5)
+            
+            # Correr run_cycle inmediatamente en el hilo actual antes de soltarlo
             self._run_cycle_sync()
             
             self.scheduler.start()

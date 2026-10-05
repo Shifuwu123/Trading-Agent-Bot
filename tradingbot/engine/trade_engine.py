@@ -39,7 +39,6 @@ class TradeEngine:
 
             signal = self.strategy.generate_signal(df)
             current_price = float(df['close'].iloc[-1])
-            self.portfolio_manager.update_asset_price(symbol, current_price)
             
             close_result = await self.manage_open_trades(symbol, current_price, signal, order_executor, total_capital)
             if close_result:
@@ -59,7 +58,7 @@ class TradeEngine:
                 open_trades_for_symbol = sum(1 for t in open_trades if t.symbol == symbol)
                 is_dca = open_trades_for_symbol > 0
                 
-                current_exposure = sum(float(t.price_entry) * float(t.quantity) for t in open_trades if t.side == "BUY")
+                current_exposure = sum(float(t.price_entry) * float(t.quantity) for t in open_trades)
                 exposure_pct = current_exposure / total_capital
                 
                 max_allowed_pct = self.config.risk.max_capital_exposure_pct
@@ -69,19 +68,13 @@ class TradeEngine:
                 stop_loss_price = current_price * (1 - self.config.risk.max_loss_per_trade_pct)
                 amount = self.risk_manager.calculate_position_size(total_capital, current_price, stop_loss_price)
                 if amount <= 0: amount = 0.001
-
-                # Cap amount to available headroom within max_allowed_pct
-                remaining_capital = max(0.0, (max_allowed_pct - exposure_pct) * total_capital)
-                if (amount * current_price) > remaining_capital:
-                    amount = remaining_capital / current_price
                 
                 trade_details_str = f" | Precio: {current_price} USD | Cant: {amount:.4f}"
                 
                 if not self.risk_manager.can_open_position(current_positions) and not is_dca:
                     return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Max open positions reached{trade_details_str}"}
                 
-                # Check minimum viable trade ($5 USD) or exposure limit violation
-                if (amount * current_price) < 5.0 or (exposure_pct + (amount * current_price / total_capital) > max_allowed_pct + 1e-5):
+                if exposure_pct + (amount * current_price / total_capital) > max_allowed_pct:
                     return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Fondo de Reserva / Capital Exposure (DCA={is_dca}){trade_details_str}"}
                 
                 if not self.risk_manager.check_daily_loss(0.0, total_capital):

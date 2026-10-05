@@ -1,0 +1,77 @@
+# ============================================================
+# SubAgent 1: SCALPER — Tier 1 (Alta Volatilidad + Liquidez)
+# Monedas: SUI, NEAR, SOL, DOGE (+ anclas de liquidez)
+# Basado en: Informe Mercado Crypto - Sección 5.2
+# Decisión aplicada: OPCIÓN A — Portafolio Equilibrado de Alto Rendimiento
+#   Mayor resiliencia en mercados laterales al inicio (Recomendación #1)
+# ============================================================
+agent:
+  name: "ScalperAgent_Tier1"
+  agent_id: "scalper_t1"
+  capital_pool_pct: 0.45           # 45% del capital total (Escenario A con Tier3)
+
+bot:
+  mode: "active"
+  trading_mode: "scalper"
+  timeframe: "1m"
+
+  # ----------------------------------------------------------
+  # ✅ OPCIÓN A (SELECCIONADA): Portafolio Equilibrado de Alto Rendimiento
+  #    Mayor resiliencia en mercados laterales. Mezcla anclas de liquidez
+  #    (SOL, BNB, XRP) con activos de momentum (SUI, NEAR, DOGE, FET).
+  #    Recomendación del informe: empezar aquí antes de pasar a Opción B.
+  # ----------------------------------------------------------
+  trading_pairs:
+    - "SOL/USDT"           # Pilar de liquidez — alta estabilidad
+    - "BNB/USDT"           # Pilar de liquidez — señales limpias
+    - "XRP/USDT"           # Pilar de liquidez — estabilidad
+    - "SUI/USDT"           # Líder de momentum (rango ~8% diario)
+    - "NEAR/USDT"          # Líder de momentum (rango ~7% diario)
+    - "DOGE/USDT"          # Alta volatilidad + liquidez
+    - "ADA/USDT"           # Ancla de Tier 2 con buena liquidez
+
+  # ----------------------------------------------------------
+  # 🚀 OPCIÓN B (comentada): Scalper Agresivo — activar tras 1 semana
+  #    Win Rate > 55% en paper trading para migrar a esta configuración.
+  # ----------------------------------------------------------
+  # trading_pairs:
+  #   - "SUI/USDT"
+  #   - "NEAR/USDT"
+  #   - "FET/USDT"
+  #   - "STRK/USDT"
+  #   - "TAO/USDT"
+  #   - "WLD/USDT"
+  #   - "DOGE/USDT"
+  #   - "SOL/USDT"
+  #   - "QNT/USDT"
+  #   - "ADA/USDT"
+
+  dynamic_timeframe:
+    enabled: true
+    active_hours_utc:
+      start: 13
+      end: 21
+    active_timeframe: "1m"
+    passive_timeframe: "5m"
+
+  base_currency: "USDT"
+  fiat_currency: "CLP"
+
+risk:
+  max_open_positions: 8
+  max_capital_exposure_pct: 0.80
+  reserve_capital_pct: 0.20
+  max_loss_per_trade_pct: 0.02
+  daily_loss_limit_pct: 0.05
+  max_drawdown_pct: 0.15
+  default_take_profit_pct: 0.04    # TP 4% alcanzable con SUI/NEAR en 1m-15m
+  trailing_stop: true
+  trailing_stop_positive: 0.02
+  min_order_usd: 1.0
+
+strategies:
+  active: "ema_crossover"
+  ema_crossover:
+    fast_period: 9
+    slow_period: 21
+    signal_type: "ema"

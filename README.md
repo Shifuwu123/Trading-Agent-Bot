@@ -6,8 +6,8 @@ Un agente de trading automatizado y asíncrono con interfaz interactiva vía Tel
 - **Market Connector:** Conexión directa a Binance Testnet mediante CCXT.
 - **Estrategia (EMA Crossover):** Estrategia de cruce de medias móviles exponenciales usando pandas nativo.
 - **Paper Trading:** Simulación completa con una **Billetera Digital** aislada que lleva la contabilidad precisa sin gastar dinero real.
-- **Gestor de Riesgo:** Reglas estrictas de asignación por slot (`(capital * 0.70) / max_open_positions`), protección permanente del 30% como Fondo de Reserva (DCA/emergencias), y Stop Loss máximo por trade (2%) con límite de pérdida diaria (5%).
-- **Telegram UI & Cash Flow:** Control total por chat. Comandos de trading (`/buy`, `/sell` con cierre automático de trades coincidentes), cambio de modos (`/mode`), billetera y holdings independientes (`/wallet`, `/billetera`), y contabilidad avanzada (`/cashflow`, `/deposit`, `/expense`).
+- **Gestor de Riesgo:** Reglas estrictas para bloquear operaciones que superen el límite de posiciones (ej. 3 simultáneas) o el riesgo de capital.
+- **Telegram UI & Cash Flow:** Control total por chat. Comandos de trading (`/buy`, `/sell`), cambio de modos (`/mode`), y contabilidad avanzada (`/cashflow`, `/deposit`, `/expense`).
 - **Logger Estructurado:** Reportes históricos en formato CSV (`log_general.csv`, `log_errores.csv`, `log_reportes.csv`).
 - **Conversor CLP:** Integración con la API de `mindicador.cl` para traducir tus ganancias de dólares (USD) a pesos chilenos (CLP).
 

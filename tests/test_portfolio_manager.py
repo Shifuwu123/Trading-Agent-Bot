@@ -190,4 +190,95 @@ async def test_telegram_async_commands_and_callbacks():
     # Ensure no second message was sent via reply_text
     assert cb_update.callback_query.message.reply_text.call_count == 0
 
+def test_reset_pnl_method():
+    pm = PortfolioManager()
+    session = DatabaseSession.get_session()
+    try:
+        # Create a test closed trade
+        test_trade = Trade(
+            trade_id="mock_test_reset_trade",
+            symbol="BTC/USDT",
+            side="BUY",
+            quantity=Decimal("0.01"),
+            price_entry=Decimal("50000.0"),
+            price_exit=Decimal("55000.0"),
+            pnl=Decimal("50.0"),
+            status="CLOSED",
+            is_paper=True
+        )
+        session.add(test_trade)
+        session.commit()
+
+        # Call reset_pnl
+        res = pm.reset_pnl(is_paper=True)
+        assert res["status"] == "success"
+        assert res["archived_trades_count"] >= 1
+
+        # Check that test_trade is now ARCHIVED
+        session.refresh(test_trade)
+        assert test_trade.status == "ARCHIVED"
+
+        # Cleanup
+        session.delete(test_trade)
+        session.commit()
+    finally:
+        session.close()
+
+@pytest.mark.asyncio
+async def test_telegram_reset_pnl_callbacks():
+    from unittest.mock import AsyncMock
+    from tradingbot.interfaces.telegram.telegram_listener import TelegramListener
+
+    mock_bot = MagicMock()
+    mock_bot.portfolio_manager.reset_pnl.return_value = {
+        "status": "success",
+        "archived_trades_count": 5,
+        "archived_pnl": 95.71
+    }
+    mock_bot.portfolio_manager.get_cashflow_summary.return_value = {
+        "balance": 20.0,
+        "deposits": 0.0,
+        "expenses": 0.0,
+        "withdrawals": 0.0,
+        "realized_pnl": 0.0,
+        "unrealized_pnl": 0.0,
+        "pnl": 0.0,
+        "roi_pct": 0.0
+    }
+
+    listener = TelegramListener(mock_bot)
+    listener.allowed_chat_id = "12345"
+
+    update = MagicMock()
+    update.effective_chat.id = 12345
+    update.message.reply_text = AsyncMock()
+    context = MagicMock()
+
+    # Test /reset_pnl command
+    await listener.reset_pnl_command(update, context)
+    assert update.message.reply_text.call_count == 1
+    assert "Reinicio de PnL" in update.message.reply_text.call_args[0][0]
+
+    # Test cmd:ask_reset_pnl callback
+    cb_update = MagicMock()
+    cb_update.effective_chat.id = 12345
+    cb_update.callback_query.data = "cmd:ask_reset_pnl"
+    cb_update.callback_query.answer = AsyncMock()
+    cb_update.callback_query.edit_message_text = AsyncMock()
+
+    await listener.callback_handler(cb_update, context)
+    assert cb_update.callback_query.edit_message_text.call_count == 1
+    assert "Reinicio de PnL" in cb_update.callback_query.edit_message_text.call_args[0][0]
+
+    # Test cmd:confirm_reset_pnl callback
+    cb_update.callback_query.data = "cmd:confirm_reset_pnl"
+    cb_update.callback_query.edit_message_text.reset_mock()
+
+    await listener.callback_handler(cb_update, context)
+    assert cb_update.callback_query.edit_message_text.call_count == 1
+    confirm_text = cb_update.callback_query.edit_message_text.call_args[0][0]
+    assert "PnL Reiniciado Exitosamente" in confirm_text
+    assert mock_bot.portfolio_manager.reset_pnl.called
+
+
 
