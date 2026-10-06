@@ -34,15 +34,17 @@ bot:
 
 risk:
   max_open_positions: 5
-  max_capital_exposure_pct: 0.70
-  reserve_capital_pct: 0.30
+  max_capital_exposure_pct: 1.00
+  reserve_capital_pct: 0.00
+  coin_reserve_pct: 0.25
+  max_coin_order_pct: 0.75
   max_loss_per_trade_pct: 0.025    # SL ligeramente mayor por volatilidad narrativa
   daily_loss_limit_pct: 0.06
   max_drawdown_pct: 0.18
   default_take_profit_pct: 0.05    # TP 5% (STRK/FET tienen rangos de 15-20%)
   trailing_stop: true
   trailing_stop_positive: 0.025
-  min_order_usd: 1.0
+  min_order_usd: 0.10
 
 strategies:
   active: "ema_crossover"

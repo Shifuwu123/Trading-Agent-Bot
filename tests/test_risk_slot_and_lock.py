@@ -110,3 +110,60 @@ async def test_no_duplicate_buys_for_open_symbol():
         session.query(Trade).filter(Trade.trade_id == "test_dup_001").delete()
         session.commit()
         session.close()
+
+
+@pytest.mark.asyncio
+async def test_individual_coin_reserve_order_size():
+    from unittest.mock import MagicMock, AsyncMock
+    import pandas as pd
+    from tradingbot.engine.trade_engine import TradeEngine
+    from tradingbot.database.models import Trade
+
+    config = load_yaml_config("config.yaml")
+    config.risk.coin_reserve_pct = 0.25
+    config.risk.max_coin_order_pct = 0.75
+    config.risk.min_order_usd = 0.10
+
+    rm = RiskManager(config)
+    pm = PortfolioManager()
+    strategy = MagicMock()
+    strategy.name = "EMACrossover"
+    strategy.slow_period = 21
+    strategy.generate_signal.return_value = "BUY"
+    notifier = MagicMock()
+    clp_converter = MagicMock()
+    clp_converter.convert_usd_to_clp.return_value = 50000
+
+    te = TradeEngine(config, rm, pm, strategy, notifier, clp_converter)
+
+    mock_collector = MagicMock()
+    mock_df = pd.DataFrame({'close': [10.0] * 80})
+    mock_collector.get_historical_data = AsyncMock(return_value=mock_df)
+
+    mock_executor = MagicMock()
+    mock_executor.execute_order = AsyncMock(return_value={
+        "order_id": "test_ord_001",
+        "symbol": "SOL/USDT",
+        "side": "BUY",
+        "amount": 0.075,
+        "price": 10.0,
+        "type": "MARKET",
+        "is_paper": True,
+        "status": "FILLED"
+    })
+
+    try:
+        # With $1.00 USD base and 0 PnL, max order is 0.75 USD. At price $10, amount = 0.075 units.
+        result = await te.process_symbol("SOL/USDT", "1m", 16.0, mock_collector, mock_executor, agent_id="scalper_t1")
+
+        assert result['decision'] == "BUY"
+        mock_executor.execute_order.assert_called_once()
+        call_kwargs = mock_executor.execute_order.call_args.kwargs
+        assert call_kwargs['amount'] == pytest.approx(0.075, rel=1e-3)
+        assert call_kwargs['price'] == 10.0
+    finally:
+        session = DatabaseSession.get_session()
+        session.query(Trade).filter(Trade.trade_id == "test_ord_001").delete()
+        session.commit()
+        session.close()
+

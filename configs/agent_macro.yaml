@@ -35,15 +35,17 @@ bot:
 
 risk:
   max_open_positions: 2
-  max_capital_exposure_pct: 0.90
-  reserve_capital_pct: 0.10
+  max_capital_exposure_pct: 1.00
+  reserve_capital_pct: 0.00
+  coin_reserve_pct: 0.25
+  max_coin_order_pct: 0.75
   max_loss_per_trade_pct: 0.015    # SL 1.5% — rango diario estrecho
   daily_loss_limit_pct: 0.04
   max_drawdown_pct: 0.12
   default_take_profit_pct: 0.015   # TP 1.5% — realista con rango diario ~1%
   trailing_stop: true
   trailing_stop_positive: 0.008    # Trailing ajustado para tendencias lentas
-  min_order_usd: 1.0
+  min_order_usd: 0.10
 
 strategies:
   active: "ema_macro"              # ← Nueva estrategia EMA 50/200

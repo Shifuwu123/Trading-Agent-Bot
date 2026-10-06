@@ -46,13 +46,15 @@ risk:
   # Número máximo de posiciones simultáneas que el bot tiene permitido mantener abiertas.
   max_open_positions: 10
   
-  # Porcentaje máximo del capital total (0.30 = 30%) que el bot tiene permitido gastar sumando todas sus operaciones.
+  # Porcentaje máximo del capital total permitido para operar.
   max_capital_exposure_pct: 1.00
   
-  # Fondo de Emergencia (0.30 = 30%) que el bot nunca gastará en compras nuevas, reservado para recompras (DCA).
-  reserve_capital_pct: 0.30
+  # Reserva individual por par de moneda (0.25 = 25% reservado, orden máx 0.75 = $0.75 USD con base $1.00 USD).
+  coin_reserve_pct: 0.25
+  max_coin_order_pct: 0.75
+  min_order_usd: 0.10
   
-  # Pérdida máxima permitida por cada operación individual (0.02 = 2%). Sirve para calcular el Stop Loss y tamaño de orden.
+  # Pérdida máxima permitida por cada operación individual (0.02 = 2%). Sirve para calcular el Stop Loss.
   max_loss_per_trade_pct: 0.02
   
   # Límite global de pérdida diaria (0.05 = 5%). Si se pierde esto en 1 día, el bot dejará de operar por seguridad.

@@ -2,6 +2,7 @@ import os
 import asyncio
 import traceback
 from datetime import datetime
+from typing import Optional
 import ccxt
 from sqlalchemy import select, func
 from tradingbot.core.config import AppConfig
@@ -96,9 +97,10 @@ class TradeEngine:
             result = await session.execute(select(Trade).filter(Trade.status == "OPEN"))
             return len(result.scalars().all())
 
-    async def process_symbol(self, symbol: str, current_tf: str, total_capital: float, data_collector, order_executor) -> dict:
+    async def process_symbol(self, symbol: str, current_tf: str, total_capital: float, data_collector, order_executor, agent_id: Optional[str] = None) -> dict:
         try:
-            agent_id = getattr(self.config, "agent", None) and getattr(self.config.agent, "agent_id", "legacy") or "legacy"
+            if not agent_id:
+                agent_id = getattr(self.config, "agent", None) and getattr(self.config.agent, "agent_id", "legacy") or "legacy"
             slow_period = getattr(self.strategy, "slow_period", 21)
             limit = max(50, slow_period + 50)
             df = await data_collector.get_historical_data(symbol=symbol, timeframe=current_tf, limit=limit)
@@ -158,10 +160,17 @@ class TradeEngine:
                     if total_equity <= 0:
                         total_equity = total_capital
                     
-                    min_order_usd = getattr(self.config.risk, "min_order_usd", 1.0)
+                    # Regla de Reserva Individual por Moneda:
+                    # Se reserva un porcentaje del saldo individual (default 25%, orden máxima 75% = $0.75 USD con saldo base $1.00 USD)
+                    # Esto asegura un colchón de protección (mínimo 15%-25% de reserva) para absorber Stop Loss y permitir operaciones futuras.
+                    coin_reserve_pct = getattr(self.config.risk, "coin_reserve_pct", 0.25)
+                    max_coin_order_pct = getattr(self.config.risk, "max_coin_order_pct", 1.0 - coin_reserve_pct)
+                    coin_alloc = round(coin_balance * max_coin_order_pct, 4)
+
+                    min_order_usd = getattr(self.config.risk, "min_order_usd", 0.10)
                     
-                    # Presupuesto para la orden: menor entre el saldo individual de la moneda y la liquidez global
-                    order_usd = min(coin_balance, available_cash)
+                    # Presupuesto para la orden: menor entre la asignación de la moneda con reserva y la liquidez global
+                    order_usd = min(coin_alloc, available_cash)
                     if order_usd < min_order_usd:
                         return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Saldo insuficiente (${order_usd:.2f} USD < mín ${min_order_usd:.2f} USD)"}
 

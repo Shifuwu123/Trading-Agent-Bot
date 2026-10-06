@@ -29,13 +29,15 @@ class RiskConfig(BaseModel):
     max_open_positions: int = 20
     max_capital_exposure_pct: float = 0.30
     reserve_capital_pct: float = 0.30
+    coin_reserve_pct: float = 0.25
+    max_coin_order_pct: float = 0.75
     max_loss_per_trade_pct: float = 0.02
     daily_loss_limit_pct: float = 0.05
     max_drawdown_pct: float = 0.20
     default_take_profit_pct: float = 0.04
     trailing_stop: bool = True
     trailing_stop_positive: float = 0.02
-    min_order_usd: float = 5.0
+    min_order_usd: float = 0.10
 
 class AgentMetadataConfig(BaseModel):
     name: str = "UnnamedAgent"
