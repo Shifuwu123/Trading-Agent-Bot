@@ -175,10 +175,19 @@ class TelegramListener:
                 InlineKeyboardButton("🔄 Actualizar", callback_data="nav:wallet"),
                 InlineKeyboardButton("📈 Flujo de Caja", callback_data="nav:cashflow"),
             ],
-            [
-                InlineKeyboardButton("⬅️ Volver a Estado", callback_data="nav:status"),
-            ],
         ]
+        if isinstance(getattr(self.bot_instance, "agents", None), dict):
+            keyboard.append([
+                InlineKeyboardButton("⚡ Scalper T1", callback_data="agent_view:scalper_t1"),
+                InlineKeyboardButton("🚀 Momentum T2", callback_data="agent_view:momentum_t2"),
+            ])
+            keyboard.append([
+                InlineKeyboardButton("🐋 Macro BTC/ETH", callback_data="agent_view:macro_btceth"),
+                InlineKeyboardButton("⚠️ Especulativo T3", callback_data="agent_view:speculative_t3"),
+            ])
+        keyboard.append([
+            InlineKeyboardButton("⬅️ Volver a Estado", callback_data="nav:status"),
+        ])
         return InlineKeyboardMarkup(keyboard)
 
     def _build_why_block_keyboard(self) -> InlineKeyboardMarkup:
@@ -312,6 +321,11 @@ class TelegramListener:
         return msg, self._build_cashflow_keyboard()
 
     def _get_wallet_payload(self) -> tuple[str, InlineKeyboardMarkup]:
+        if isinstance(getattr(self.bot_instance, "agents", None), dict) and callable(getattr(self.bot_instance, "format_global_wallet_message", None)):
+            res = self.bot_instance.format_global_wallet_message()
+            if isinstance(res, str):
+                return res, self._build_wallet_keyboard()
+
         summary = self.bot_instance.portfolio_manager.get_cashflow_summary()
         liquid_balance = summary.get('balance', 0.0)
         portfolio = self.bot_instance.portfolio_manager.get_portfolio_summary()

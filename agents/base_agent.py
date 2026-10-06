@@ -313,13 +313,41 @@ class BaseAgent(ABC):
                 Trade.agent_id == self.agent_id
             ).all()
             closed_trades_count = len(closed_trades)
+            pnl_by_symbol = {}
+            trades_count_by_symbol = {}
             for ct in closed_trades:
                 pnl_val = float(ct.pnl or 0.0)
                 realized_pnl_usd += pnl_val
+                sym = ct.symbol
+                pnl_by_symbol[sym] = pnl_by_symbol.get(sym, 0.0) + pnl_val
+                trades_count_by_symbol[sym] = trades_count_by_symbol.get(sym, 0) + 1
                 if pnl_val > 0:
                     winning_trades += 1
                 elif pnl_val < 0:
                     losing_trades += 1
+
+            # Desglose de billetera por moneda ($1.00 USD base inicial por moneda)
+            coins_breakdown = []
+            open_pos_by_symbol = {op["symbol"]: op for op in open_positions}
+            for sym in pairs:
+                sym_realized = pnl_by_symbol.get(sym, 0.0)
+                op_info = open_pos_by_symbol.get(sym)
+                sym_unrealized = op_info["unrealized_pnl"] if op_info else 0.0
+                sym_total_pnl = sym_realized + sym_unrealized
+                base_usd = 1.0  # Inversión inicial base de $1.00 USD por par
+                current_value = base_usd + sym_total_pnl
+
+                coins_breakdown.append({
+                    "symbol": sym,
+                    "base_investment_usd": base_usd,
+                    "closed_trades_count": trades_count_by_symbol.get(sym, 0),
+                    "realized_pnl_usd": sym_realized,
+                    "has_open_position": op_info is not None,
+                    "open_position": op_info,
+                    "unrealized_pnl_usd": sym_unrealized,
+                    "total_pnl_usd": sym_total_pnl,
+                    "current_value_usd": current_value,
+                })
 
             # Evaluaciones (DecisionLog)
             if pairs:
@@ -358,6 +386,7 @@ class BaseAgent(ABC):
             "realized_pnl_usd": realized_pnl_usd,
             "unrealized_pnl_usd": unrealized_pnl_total,
             "total_pnl_usd": total_pnl_usd,
+            "coins_breakdown": coins_breakdown,
             "total_evaluations": total_evals,
             "eval_counts": eval_counts,
         }

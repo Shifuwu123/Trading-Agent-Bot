@@ -241,3 +241,64 @@ async def test_telegram_listener_resume_and_pause_mode_reporting():
     assert "Modo en que quedó:" in sent_text
     assert "PASSIVE" in sent_text
 
+
+def test_base_agent_coins_breakdown():
+    from agents.scalper_agent import ScalperAgent
+
+    agent = ScalperAgent("configs/agent_scalper.yaml")
+    status = agent.get_status()
+
+    assert "coins_breakdown" in status
+    assert len(status["coins_breakdown"]) == len(agent.config.bot.trading_pairs)
+    for coin_info in status["coins_breakdown"]:
+        assert coin_info["base_investment_usd"] == 1.0
+        assert "symbol" in coin_info
+        assert "realized_pnl_usd" in coin_info
+        assert "unrealized_pnl_usd" in coin_info
+        assert "total_pnl_usd" in coin_info
+        assert "current_value_usd" in coin_info
+
+
+def test_orchestrator_format_global_wallet_message():
+    from tradingbot.core.orchestrator import OrchestratorBot
+
+    with patch.object(OrchestratorBot, "__init__", lambda self: None):
+        orch = OrchestratorBot()
+        orch._fetch_total_capital = AsyncMock(return_value=16.0)
+
+        from tradingbot.utils.clp_converter import CLPConverter
+        orch.clp_converter = CLPConverter()
+
+        mock_pm = MagicMock()
+        mock_pm.get_cashflow_summary.return_value = {"balance": 16.0}
+        orch.portfolio_manager = mock_pm
+
+        mock_scalper = MagicMock()
+        mock_scalper.get_status.return_value = {
+            "agent_id": "scalper_t1",
+            "agent_name": "ScalperAgent_Tier1",
+            "pairs": ["SOL/USDT", "NEAR/USDT"],
+            "assigned_capital_usd": 7.0,
+            "total_pnl_usd": 0.50,
+            "realized_pnl_usd": 0.50,
+            "unrealized_pnl_usd": 0.0,
+            "coins_breakdown": [
+                {
+                    "symbol": "SOL/USDT",
+                    "base_investment_usd": 1.0,
+                    "current_value_usd": 1.50,
+                    "total_pnl_usd": 0.50,
+                    "has_open_position": False,
+                }
+            ],
+        }
+
+        orch.agents = {"scalper_t1": mock_scalper}
+
+        msg = orch.format_global_wallet_message(capital_usd=16.0)
+        assert "Billetera Digital Multi-Agente" in msg
+        assert "$16.00 USD" in msg
+        assert "ScalperAgent_Tier1" in msg
+        assert "SOL/USDT" in msg
+
+

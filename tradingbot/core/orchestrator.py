@@ -143,19 +143,13 @@ class OrchestratorBot:
 
     def _assign_capital(self, total_capital: float, scenario_a: bool = None):
         """
-        Distribuye el capital total entre los subagentes.
+        Distribuye el capital total entre los subagentes basado en la matriz de monedas ($1 USD por par).
 
-        Escenario A (con Tier 3 activo):
-            scalper_t1:     45%
-            momentum_t2:    35%
-            macro_btceth:   10%
-            speculative_t3: 10%
-
-        Escenario B (con Tier 3 en PASSIVE):
-            scalper_t1:     50%
-            momentum_t2:    40%
-            macro_btceth:   10%
-            speculative_t3:  0%
+        Matriz Base (16 monedas):
+            scalper_t1:     7 monedas (7/16 = 43.75% -> $7.00 en base $16)
+            momentum_t2:    5 monedas (5/16 = 31.25% -> $5.00 en base $16)
+            macro_btceth:   2 monedas (2/16 = 12.50% -> $2.00 en base $16)
+            speculative_t3: 2 monedas (2/16 = 12.50% -> $2.00 en base $16)
         """
         if scenario_a is None:
             scenario_a = self._is_speculative_active()
@@ -192,6 +186,14 @@ class OrchestratorBot:
     # ─────────────────────────────────────────────────────────────────────────
     # Lifecycle
     # ─────────────────────────────────────────────────────────────────────────
+
+    def start(self):
+        """Inicia todos los subagentes (alias de start_all para compatibilidad)."""
+        self.start_all()
+
+    def stop(self):
+        """Detiene todos los subagentes (alias de stop_all para compatibilidad)."""
+        self.stop_all()
 
     def start_all(self):
         """
@@ -356,9 +358,10 @@ class OrchestratorBot:
         Retorna el estado global del sistema para el panel de Telegram.
         Incluye estado de cada subagente, capital asignado y ciclos ejecutados.
         """
+        started = getattr(self, "_started_at", None)
         status = {
-            "orchestrator_started_at": self._started_at.isoformat() if self._started_at else None,
-            "total_agents": len(self.agents),
+            "orchestrator_started_at": started.isoformat() if started else None,
+            "total_agents": len(getattr(self, "agents", {})),
             "agents": {},
         }
         for agent_id, agent in self.agents.items():
@@ -578,5 +581,85 @@ class OrchestratorBot:
             if v > 0:
                 lines.append(f"    └ {k}: {v:,}")
 
+        # Billetera de Monedas del Agente ($1.00 USD Inicial por par)
+        coins_breakdown = status.get("coins_breakdown", [])
+        if coins_breakdown:
+            lines.append("\n👝 <b>Billetera por Moneda ($1.00 USD Base / Par):</b>")
+            for cb in coins_breakdown:
+                sym = cb["symbol"]
+                b_usd = cb["base_investment_usd"]
+                c_val = cb["current_value_usd"]
+                t_pnl = cb["total_pnl_usd"]
+                r_pnl = cb["realized_pnl_usd"]
+                u_pnl = cb["unrealized_pnl_usd"]
+                pnl_s = "+" if t_pnl >= 0 else ""
+                pos_indicator = "🟢 [POS]" if cb["has_open_position"] else "⚪ [LIQ]"
+
+                lines.append(
+                    f"  • {pos_indicator} <b>{sym}</b>: Balance: <b>${c_val:,.2f} USD</b> "
+                    f"<i>(Base: ${b_usd:.2f} | PnL: {pnl_s}${t_pnl:,.2f})</i>"
+                )
+
+        return "\n".join(lines)
+
+    def format_global_wallet_message(self, capital_usd: float = None, capital_clp: float = None) -> str:
+        """Genera el mensaje detallado de Billetera Global y Billeteras por Subagente."""
+        status = self.get_global_status()
+
+        if capital_usd is None:
+            try:
+                capital_usd = asyncio.run(self._fetch_total_capital())
+            except Exception:
+                capital_usd = 16.0
+        if capital_clp is None:
+            capital_clp = self.clp_converter.convert_usd_to_clp(capital_usd)
+
+        summary = self.portfolio_manager.get_cashflow_summary()
+        liquid_balance = summary.get('balance', float(capital_usd))
+
+        icons = {
+            "scalper_t1":     "⚡",
+            "momentum_t2":    "🚀",
+            "macro_btceth":   "🐋",
+            "speculative_t3": "⚠️",
+        }
+
+        lines = [
+            "👝 <b>Billetera Digital Multi-Agente</b>\n",
+            f"💵 <b>Saldo Total en Cuenta:</b> ${capital_usd:,.2f} USDT <i>(${capital_clp:,.0f} CLP)</i>",
+            f"💧 <b>Liquidez Disponible:</b> ${liquid_balance:,.2f} USDT",
+            f"🎯 <b>Inversión Base Matriz:</b> $16.00 USD (16 pares x $1.00 USD)\n",
+            "━━━━━━━━━━━━━━━━━━━",
+            "🤖 <b>Billeteras por Sub-Agente:</b>\n",
+        ]
+
+        for aid, agent_status in status["agents"].items():
+            if not isinstance(agent_status, dict) or "error" in agent_status:
+                continue
+            icon = icons.get(aid, "🤖")
+            aname = agent_status.get("agent_name", aid)
+            pairs = agent_status.get("pairs", [])
+            base_agent_cap = len(pairs) * 1.0
+            tot_pnl = agent_status.get("total_pnl_usd", 0.0)
+            r_pnl = agent_status.get("realized_pnl_usd", 0.0)
+            u_pnl = agent_status.get("unrealized_pnl_usd", 0.0)
+            agent_equity = base_agent_cap + tot_pnl
+
+            pnl_sign = "+" if tot_pnl >= 0 else ""
+            lines.append(f"{icon} <b>{aname}</b> ({len(pairs)} monedas):")
+            lines.append(f"  • Base: <b>${base_agent_cap:,.2f} USD</b> | Saldo Actual: <b>${agent_equity:,.2f} USD</b>")
+            lines.append(f"  • PnL Total: <b>{pnl_sign}${tot_pnl:,.2f} USD</b> <i>(Realizado: ${r_pnl:,.2f} | Flotante: ${u_pnl:,.2f})</i>")
+
+            coins_bd = agent_status.get("coins_breakdown", [])
+            for cb in coins_bd:
+                sym = cb["symbol"]
+                c_val = cb["current_value_usd"]
+                c_pnl = cb["total_pnl_usd"]
+                c_sign = "+" if c_pnl >= 0 else ""
+                pos_tag = "🟢" if cb["has_open_position"] else "⚪"
+                lines.append(f"    └ {pos_tag} <code>{sym}</code>: ${c_val:,.2f} <i>({c_sign}${c_pnl:,.2f})</i>")
+            lines.append("")
+
+        lines.append("💡 <i>Usa los botones o /agent_view:&lt;id&gt; para gestionar cada agente.</i>")
         return "\n".join(lines)
 
