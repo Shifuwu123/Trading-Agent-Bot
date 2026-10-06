@@ -167,3 +167,72 @@ async def test_individual_coin_reserve_order_size():
         session.commit()
         session.close()
 
+
+def test_trade_engine_lock_across_different_event_loops():
+    """Verifica que TradeEngine.trade_lock se reasocie automáticamente a nuevos event loops sin lanzar RuntimeError."""
+    import asyncio
+    from unittest.mock import MagicMock
+    from tradingbot.engine.trade_engine import TradeEngine
+
+    config = load_yaml_config("config.yaml")
+    rm = RiskManager(config)
+    pm = PortfolioManager()
+    strategy = MagicMock()
+    notifier = MagicMock()
+    clp_converter = MagicMock()
+
+    te = TradeEngine(config, rm, pm, strategy, notifier, clp_converter)
+
+    async def acquire_in_loop():
+        async with te.trade_lock:
+            await asyncio.sleep(0.01)
+        return id(te.trade_lock)
+
+    # Ciclo 1 en Loop 1
+    lock_id_1 = asyncio.run(acquire_in_loop())
+
+    # Ciclo 2 en Loop 2 (nuevo bucle creado por asyncio.run)
+    lock_id_2 = asyncio.run(acquire_in_loop())
+
+    # Ciclo 3 en Loop 3
+    lock_id_3 = asyncio.run(acquire_in_loop())
+
+    # Cada ciclo en un loop diferente debe generar un Lock fresco asociado a ese loop
+    assert lock_id_1 != lock_id_2
+    assert lock_id_2 != lock_id_3
+
+
+def test_trade_engine_lock_shared_within_same_event_loop():
+    """Verifica que múltiples tareas concurrentes dentro del mismo event loop compartan la misma instancia de Lock."""
+    import asyncio
+    from unittest.mock import MagicMock
+    from tradingbot.engine.trade_engine import TradeEngine
+
+    config = load_yaml_config("config.yaml")
+    rm = RiskManager(config)
+    pm = PortfolioManager()
+    strategy = MagicMock()
+    notifier = MagicMock()
+    clp_converter = MagicMock()
+
+    te = TradeEngine(config, rm, pm, strategy, notifier, clp_converter)
+
+    async def run_concurrent():
+        async def task_a():
+            async with te.trade_lock:
+                await asyncio.sleep(0.02)
+            return id(te.trade_lock)
+
+        async def task_b():
+            async with te.trade_lock:
+                await asyncio.sleep(0.02)
+            return id(te.trade_lock)
+
+        id_a, id_b = await asyncio.gather(task_a(), task_b())
+        assert id_a == id_b
+        return id_a
+
+    res_id = asyncio.run(run_concurrent())
+    assert res_id is not None
+
+

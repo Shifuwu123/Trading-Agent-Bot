@@ -27,7 +27,21 @@ class TradeEngine:
         self.strategy = strategy
         self.notifier = notifier
         self.clp_converter = clp_converter
-        self._trade_lock = asyncio.Lock()
+        self._trade_lock: Optional[asyncio.Lock] = None
+        self._trade_lock_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    @property
+    def trade_lock(self) -> asyncio.Lock:
+        """Retorna un Lock de asyncio asociado dinámicamente al event loop activo actual."""
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        if self._trade_lock is None or self._trade_lock_loop is not current_loop:
+            self._trade_lock = asyncio.Lock()
+            self._trade_lock_loop = current_loop
+        return self._trade_lock
 
     def generate_coin_loss_report(self, agent_id: str, symbol: str, base_usd: float, realized_pnl: float, closed_trades: list) -> str:
         """Genera un informe técnico forense en Markdown cuando una moneda agota sus fondos."""
@@ -122,7 +136,7 @@ class TradeEngine:
                 
                 log.info(f"Signal {signal} generated for {symbol}")
                 
-                async with self._trade_lock:
+                async with self.trade_lock:
                     async with DatabaseSession.get_async_session() as session:
                         result = await session.execute(select(Trade).filter(Trade.status == "OPEN"))
                         open_trades = result.scalars().all()
