@@ -302,3 +302,71 @@ def test_orchestrator_format_global_wallet_message():
         assert "SOL/USDT" in msg
 
 
+def test_orchestrator_format_matrix_message():
+    from tradingbot.core.orchestrator import OrchestratorBot
+
+    with patch.object(OrchestratorBot, "__init__", lambda self: None):
+        orch = OrchestratorBot()
+
+        mock_scalper = MagicMock()
+        mock_scalper.get_status.return_value = {
+            "agent_id": "scalper_t1",
+            "agent_name": "ScalperAgent_Tier1",
+            "mode": "ACTIVE",
+            "coins_breakdown": [
+                {
+                    "symbol": "SOL/USDT",
+                    "base_investment_usd": 1.0,
+                    "current_value_usd": 1.20,
+                    "total_pnl_usd": 0.20,
+                    "has_open_position": False,
+                },
+                {
+                    "symbol": "NEAR/USDT",
+                    "base_investment_usd": 1.0,
+                    "current_value_usd": 0.0,
+                    "total_pnl_usd": -1.0,
+                    "has_open_position": False,
+                },
+            ],
+        }
+
+        orch.agents = {"scalper_t1": mock_scalper}
+
+        msg = orch.format_matrix_message()
+        assert "MATRIZ DE ACTIVOS Y FUNCIONAMIENTO" in msg
+        assert "TABLA ECONÓMICA" in msg
+        assert "TABLA DE FUNCIONAMIENTO" in msg
+        assert "SOL/USDT" in msg
+        assert "🟢 <b>ON</b>" in msg
+        assert "🔴 <b>OFF</b>" in msg
+        assert "1 Monedas en 🟢 <b>ON</b>" in msg
+        assert "1 Monedas en 🔴 <b>OFF</b>" in msg
+
+
+def test_trade_engine_generate_coin_loss_report(tmp_path):
+    from tradingbot.engine.trade_engine import TradeEngine
+    from tradingbot.database.models import Trade
+
+    engine = TradeEngine.__new__(TradeEngine)
+    engine.config = MagicMock()
+
+    sample_trade = Trade(
+        trade_id="test_t1",
+        symbol="DOGE/USDT",
+        side="BUY",
+        quantity=10.0,
+        price_entry=0.10,
+        price_exit=0.00,
+        pnl=-1.0,
+        pnl_pct=-1.0,
+        agent_id="scalper_t1",
+        closed_at=datetime.utcnow()
+    )
+
+    path = engine.generate_coin_loss_report("scalper_t1", "DOGE/USDT", 1.0, -1.0, [sample_trade])
+    assert "informe_perdida_scalper_t1_DOGE_USDT_" in path
+    assert path.startswith("/home/shifu/documentos-agy/")
+
+
+

@@ -663,3 +663,54 @@ class OrchestratorBot:
         lines.append("💡 <i>Usa los botones o /agent_view:&lt;id&gt; para gestionar cada agente.</i>")
         return "\n".join(lines)
 
+    def format_matrix_message(self) -> str:
+        """Genera la visualización de la Matriz Económica y la Matriz de Funcionamiento (ON/OFF)."""
+        status = self.get_global_status()
+
+        lines = [
+            "📊 <b>MATRIZ DE ACTIVOS Y FUNCIONAMIENTO</b>\n",
+            "━━━━━━━━━━━━━━━━━━━",
+            "💰 <b>TABLA ECONÓMICA (Saldos por Moneda / Base $1.00 USD):</b>\n",
+        ]
+
+        active_count = 0
+        disabled_count = 0
+
+        for aid, agent_status in status["agents"].items():
+            if not isinstance(agent_status, dict) or "error" in agent_status:
+                continue
+            coins_bd = agent_status.get("coins_breakdown", [])
+            for cb in coins_bd:
+                sym = cb["symbol"]
+                c_val = cb["current_value_usd"]
+                t_pnl = cb["total_pnl_usd"]
+                pnl_s = "+" if t_pnl >= 0 else ""
+                lines.append(f"  • <code>{sym}</code> ({aid}): <b>${c_val:,.2f} USD</b> <i>(PnL: {pnl_s}${t_pnl:,.2f})</i>")
+
+        lines.extend([
+            "\n━━━━━━━━━━━━━━━━━━━",
+            "⚙️ <b>TABLA DE FUNCIONAMIENTO (Estados ON / OFF):</b>\n",
+        ])
+
+        for aid, agent_status in status["agents"].items():
+            if not isinstance(agent_status, dict) or "error" in agent_status:
+                continue
+            coins_bd = agent_status.get("coins_breakdown", [])
+            for cb in coins_bd:
+                sym = cb["symbol"]
+                c_val = cb["current_value_usd"]
+                is_on = c_val > 0.0 and agent_status.get("mode") == "ACTIVE"
+                if is_on:
+                    active_count += 1
+                    status_str = "🟢 <b>ON</b> (Operando)"
+                else:
+                    disabled_count += 1
+                    status_str = "🔴 <b>OFF</b> (Detenida/Sin Fondos)" if c_val <= 0 else "⏸️ <b>OFF</b> (Pausado)"
+                lines.append(f"  • <code>{sym}</code> [{aid}]: {status_str}")
+
+        lines.extend([
+            f"\n📈 <b>Resumen Operativo:</b> {active_count} Monedas en 🟢 <b>ON</b> | {disabled_count} Monedas en 🔴 <b>OFF</b>",
+            "💡 <i>Si el saldo de una moneda llega a $0.00 USD, pasa automáticamente a OFF y se despacha un informe forense.</i>"
+        ])
+        return "\n".join(lines)
+

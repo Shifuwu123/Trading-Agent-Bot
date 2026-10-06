@@ -1,7 +1,9 @@
+import os
 import asyncio
 import traceback
+from datetime import datetime
 import ccxt
-from sqlalchemy import select
+from sqlalchemy import select, func
 from tradingbot.core.config import AppConfig
 from tradingbot.engine.risk_manager import RiskManager
 from tradingbot.execution.portfolio_manager import PortfolioManager, DatabaseSession
@@ -26,6 +28,61 @@ class TradeEngine:
         self.clp_converter = clp_converter
         self._trade_lock = asyncio.Lock()
 
+    def generate_coin_loss_report(self, agent_id: str, symbol: str, base_usd: float, realized_pnl: float, closed_trades: list) -> str:
+        """Genera un informe técnico forense en Markdown cuando una moneda agota sus fondos."""
+        timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+        safe_symbol = symbol.replace('/', '_')
+        report_filename = f"informe_perdida_{agent_id}_{safe_symbol}_{timestamp_str}.md"
+        report_path = os.path.join("/home/shifu/documentos-agy", report_filename)
+
+        lines = [
+            f"# Informe Forense: Agotamiento de Fondos en {symbol}",
+            f"",
+            f"**Fecha y Hora:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ",
+            f"**Sub-Agente:** `{agent_id}`  ",
+            f"**Activo:** `{symbol}`  ",
+            f"**Inversión Inicial Asignada:** ${base_usd:.2f} USD  ",
+            f"**PnL Acumulado Realizado:** ${realized_pnl:.2f} USD  ",
+            f"**Estado en Tabla de Funcionamiento:** 🔴 **OFF (Detenida)**  ",
+            f"",
+            f"---",
+            f"",
+            f"## 1. Resumen de la Desconexión",
+            f"El saldo asignado para `{symbol}` ha llegado a **$0.00 USD** (o saldo negativo de ${realized_pnl:.2f} USD) debido a pérdidas acumuladas.",
+            f"La celda `({agent_id}, {symbol})` en la Tabla de Funcionamiento ha pasado automáticamente a **OFF**, bloqueando cualquier nueva compra.",
+            f"",
+            f"## 2. Historial de Operaciones del Activo",
+            f"",
+            f"| Trade ID | Lado | Cantidad | Precio Entrada | Precio Salida | PnL (USD) | PnL (%) | Estrategia | Fecha Cierre |",
+            f"|---|---|---|---|---|---|---|---|---|"
+        ]
+
+        for t in closed_trades:
+            tid = getattr(t, "trade_id", "N/A")
+            side = getattr(t, "side", "N/A")
+            qty = float(getattr(t, "quantity", 0.0) or 0.0)
+            p_in = float(getattr(t, "price_entry", 0.0) or 0.0)
+            p_out = float(getattr(t, "price_exit", 0.0) or 0.0)
+            pnl = float(getattr(t, "pnl", 0.0) or 0.0)
+            pnl_pct = float(getattr(t, "pnl_pct", 0.0) or 0.0) * 100
+            strat = getattr(t, "strategy", "N/A")
+            c_at = getattr(t, "closed_at", "N/A")
+            lines.append(f"| `{tid}` | {side} | {qty:.6f} | ${p_in:,.4f} | ${p_out:,.4f} | ${pnl:.4f} | {pnl_pct:.2f}% | {strat} | {c_at} |")
+
+        lines.extend([
+            f"",
+            f"---",
+            f"## 3. Acciones Recomendadas",
+            f"1. Para reanudar operaciones en `{symbol}`, asigne nuevo capital desde la interfaz o base de datos.",
+            f"2. Audite las condiciones de mercado del par en el dataset histórico de velas `candles`."
+        ])
+
+        os.makedirs("/home/shifu/documentos-agy", exist_ok=True)
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+        return report_path
+
     def get_open_positions_count(self) -> int:
         session = DatabaseSession.get_session()
         try:
@@ -41,6 +98,7 @@ class TradeEngine:
 
     async def process_symbol(self, symbol: str, current_tf: str, total_capital: float, data_collector, order_executor) -> dict:
         try:
+            agent_id = getattr(self.config, "agent", None) and getattr(self.config.agent, "agent_id", "legacy") or "legacy"
             slow_period = getattr(self.strategy, "slow_period", 21)
             limit = max(50, slow_period + 50)
             df = await data_collector.get_historical_data(symbol=symbol, timeframe=current_tf, limit=limit)
@@ -52,7 +110,7 @@ class TradeEngine:
             current_price = float(df['close'].iloc[-1])
             await self.portfolio_manager.update_asset_price_async(symbol, current_price)
             
-            close_result = await self.manage_open_trades(symbol, current_price, signal, order_executor, total_capital)
+            close_result = await self.manage_open_trades(symbol, current_price, signal, order_executor, total_capital, agent_id)
             if close_result:
                 return close_result
 
@@ -66,7 +124,24 @@ class TradeEngine:
                     async with DatabaseSession.get_async_session() as session:
                         result = await session.execute(select(Trade).filter(Trade.status == "OPEN"))
                         open_trades = result.scalars().all()
+                        
+                        # Consultar PnL realizado para esta moneda en este agente
+                        pnl_res = await session.execute(
+                            select(func.sum(Trade.pnl)).filter(
+                                Trade.status == "CLOSED",
+                                Trade.symbol == symbol,
+                                Trade.agent_id == agent_id
+                            )
+                        )
+                        coin_realized_pnl = float(pnl_res.scalar() or 0.0)
                     
+                    # Validación de Fondo Individual por Moneda ($1.00 USD base)
+                    base_coin_usd = 1.0
+                    coin_balance = base_coin_usd + coin_realized_pnl
+                    if coin_balance <= 0.0:
+                        log.warning(f"[{agent_id}] Fondo de {symbol} agotado (${coin_balance:.2f} USD). Estado: OFF.")
+                        return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Fondo agotado (${coin_balance:.2f} USD) | Estado OFF"}
+
                     current_positions = len(open_trades)
                     open_trades_for_symbol = sum(1 for t in open_trades if t.symbol == symbol)
                     
@@ -83,30 +158,12 @@ class TradeEngine:
                     if total_equity <= 0:
                         total_equity = total_capital
                     
-                    current_exposure = sum(float(t.price_entry) * float(t.quantity) for t in open_trades if t.side == "BUY")
-                    exposure_pct = current_exposure / total_equity if total_equity > 0 else 0.0
+                    min_order_usd = getattr(self.config.risk, "min_order_usd", 1.0)
                     
-                    max_allowed_pct = max(0.05, self.config.risk.max_capital_exposure_pct - getattr(self.config.risk, "reserve_capital_pct", 0.30))
-                    
-                    # Dimensionamiento por ranura (slot)
-                    max_positions = max(1, getattr(self.config.risk, "max_open_positions", 10))
-                    slot_budget = (total_equity * max_allowed_pct) / max_positions
-                    min_order_usd = getattr(self.config.risk, "min_order_usd", 1.0 if self.portfolio_manager.settings.paper_trading else 5.0)
-
-                    # Verificar límite de exposición de capital (preservando fondo de reserva)
-                    remaining_exposure_capital = max(0.0, (max_allowed_pct - exposure_pct) * total_equity)
-                    if remaining_exposure_capital < min_order_usd:
-                        return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Límite de exposición alcanzado ({exposure_pct:.1%}/{max_allowed_pct:.1%}) | Reserva protegida"}
-
-                    # Verificar efectivo líquido disponible en billetera
-                    if available_cash < min_order_usd:
-                        return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Efectivo insuficiente (${available_cash:.2f} USD < mín ${min_order_usd:.2f} USD)"}
-
-                    # Asignar presupuesto de orden: menor entre slot, margen de exposición y efectivo libre
-                    target_order_usd = max(slot_budget, min_order_usd)
-                    order_usd = min(target_order_usd, remaining_exposure_capital, available_cash)
+                    # Presupuesto para la orden: menor entre el saldo individual de la moneda y la liquidez global
+                    order_usd = min(coin_balance, available_cash)
                     if order_usd < min_order_usd:
-                        return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Fondos insuficientes (${order_usd:.2f} USD < mín ${min_order_usd:.2f} USD)"}
+                        return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Saldo insuficiente (${order_usd:.2f} USD < mín ${min_order_usd:.2f} USD)"}
 
                     amount = order_usd / current_price
 
@@ -116,7 +173,6 @@ class TradeEngine:
                     execution_result = await order_executor.execute_order(
                         symbol=symbol, side=signal, amount=amount, order_type="MARKET", price=current_price
                     )
-                    agent_id = getattr(self.config, "agent", None) and getattr(self.config.agent, "agent_id", "legacy") or "legacy"
                     await self.portfolio_manager.record_open_trade_async(
                         execution_result, 
                         strategy=getattr(self.strategy, "name", "EMACrossover"),
@@ -141,7 +197,7 @@ class TradeEngine:
             self.notifier.send_error_alert(f"Error processing {symbol}:\n{traceback.format_exc()}")
             return {'symbol': symbol, 'decision': 'ERROR', 'reason': str(e)}
 
-    async def manage_open_trades(self, symbol: str, current_price: float, current_signal: str, order_executor, total_capital: float) -> dict:
+    async def manage_open_trades(self, symbol: str, current_price: float, current_signal: str, order_executor, total_capital: float, agent_id: str = "legacy") -> dict:
         async with DatabaseSession.get_async_session() as session:
             result = await session.execute(
                 select(Trade).filter(Trade.symbol == symbol, Trade.status == "OPEN")
@@ -188,5 +244,41 @@ class TradeEngine:
                 self.notifier.send_trade_alert(trade_details, capital_clp)
                 registrar_log("REPORTE", f"Operación CERRADA: {execution_side} de {trade.quantity} {symbol} a {executed_price} USD. PnL: {pnl_usd:.2f}. Razón: {close_reason}")
                 
+                # Verificación de agotamiento de fondo tras el cierre
+                try:
+                    async with DatabaseSession.get_async_session() as session:
+                        pnl_res = await session.execute(
+                            select(func.sum(Trade.pnl)).filter(
+                                Trade.status == "CLOSED",
+                                Trade.symbol == symbol,
+                                Trade.agent_id == agent_id
+                            )
+                        )
+                        updated_pnl = float(pnl_res.scalar() or 0.0)
+                        updated_balance = 1.0 + updated_pnl
+
+                        if updated_balance <= 0.0:
+                            trades_res = await session.execute(
+                                select(Trade).filter(
+                                    Trade.status == "CLOSED",
+                                    Trade.symbol == symbol,
+                                    Trade.agent_id == agent_id
+                                ).order_by(Trade.closed_at.desc())
+                            )
+                            closed_history = trades_res.scalars().all()
+                            report_path = self.generate_coin_loss_report(agent_id, symbol, 1.0, updated_pnl, closed_history)
+                            
+                            alert_msg = (
+                                f"🔴 <b>MONEDA DETENIDA (ESTADO OFF): {symbol}</b>\n\n"
+                                f"⚠️ El fondo asignado a <code>{symbol}</code> en <b>{agent_id}</b> se ha agotado.\n"
+                                f"💰 <b>Saldo Final:</b> ${updated_balance:.2f} USD (PnL: ${updated_pnl:.2f} USD)\n"
+                                f"🛑 <b>Acción:</b> Estado cambiado automáticamente a <b>OFF</b> en la Tabla de Funcionamiento.\n"
+                                f"📄 <b>Informe forense generado en:</b> <code>{report_path}</code>"
+                            )
+                            self.notifier.send_message(alert_msg)
+                            registrar_log("ALERTA", f"Moneda {symbol} en {agent_id} agotada (${updated_balance:.2f}). Pasada a OFF.")
+                except Exception as ex:
+                    log.warning(f"Error verificando balance de moneda tras cierre: {ex}")
+
                 return {'symbol': symbol, 'decision': 'CLOSED', 'reason': close_reason}
         return None

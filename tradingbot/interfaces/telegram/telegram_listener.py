@@ -49,8 +49,9 @@ class TelegramListener:
     def _build_persistent_reply_keyboard(self) -> ReplyKeyboardMarkup:
         keyboard = [
             [KeyboardButton("📊 /status"), KeyboardButton("👝 /wallet")],
-            [KeyboardButton("📈 /cashflow"), KeyboardButton("📊 /stats")],
-            [KeyboardButton("⚙️ /mode"), KeyboardButton("❓ /help")],
+            [KeyboardButton("📋 /matriz"), KeyboardButton("📈 /cashflow")],
+            [KeyboardButton("📊 /stats"), KeyboardButton("⚙️ /mode")],
+            [KeyboardButton("❓ /help")],
         ]
         return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -68,7 +69,11 @@ class TelegramListener:
             ],
             [
                 InlineKeyboardButton("👝 Billetera", callback_data="nav:wallet"),
+                InlineKeyboardButton("📋 Matriz Activos", callback_data="nav:matrix"),
+            ],
+            [
                 InlineKeyboardButton("📊 Estadísticas", callback_data="stats_h:0"),
+                InlineKeyboardButton("🛡️ Bloqueos", callback_data="nav:why_block"),
             ],
         ]
 
@@ -86,10 +91,7 @@ class TelegramListener:
 
         keyboard.extend([
             [
-                InlineKeyboardButton("🛡️ Bloqueos", callback_data="nav:why_block"),
                 InlineKeyboardButton("⚙️ Modo de Trading", callback_data="nav:modes"),
-            ],
-            [
                 toggle_button,
             ],
         ])
@@ -173,7 +175,11 @@ class TelegramListener:
         keyboard = [
             [
                 InlineKeyboardButton("🔄 Actualizar", callback_data="nav:wallet"),
+                InlineKeyboardButton("📋 Matriz Activos", callback_data="nav:matrix"),
+            ],
+            [
                 InlineKeyboardButton("📈 Flujo de Caja", callback_data="nav:cashflow"),
+                InlineKeyboardButton("📊 Estadísticas", callback_data="stats_h:0"),
             ],
         ]
         if isinstance(getattr(self.bot_instance, "agents", None), dict):
@@ -190,6 +196,19 @@ class TelegramListener:
         ])
         return InlineKeyboardMarkup(keyboard)
 
+    def _build_matrix_keyboard(self) -> InlineKeyboardMarkup:
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Actualizar", callback_data="nav:matrix"),
+                InlineKeyboardButton("👝 Ver Billetera", callback_data="nav:wallet"),
+            ],
+            [
+                InlineKeyboardButton("📈 Flujo de Caja", callback_data="nav:cashflow"),
+                InlineKeyboardButton("⬅️ Volver a Estado", callback_data="nav:status"),
+            ],
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
     def _build_why_block_keyboard(self) -> InlineKeyboardMarkup:
         keyboard = [
             [
@@ -198,6 +217,12 @@ class TelegramListener:
             ]
         ]
         return InlineKeyboardMarkup(keyboard)
+
+    def _get_matrix_payload(self) -> tuple[str, InlineKeyboardMarkup]:
+        if hasattr(self.bot_instance, "format_matrix_message"):
+            msg = self.bot_instance.format_matrix_message()
+            return msg, self._build_matrix_keyboard()
+        return "❌ Matriz no disponible en este modo.", self._build_matrix_keyboard()
 
     # -------------------------------------------------------------
     # Message Payloads
@@ -450,6 +475,7 @@ class TelegramListener:
             "📖 <b>Comandos Disponibles</b>\n\n"
             "• <code>/status</code>: Ver estado general y detalle de todos los sub-agentes\n"
             "• <code>/wallet</code>: Detalle de billetera (saldo disponible y holdings)\n"
+            "• <code>/matriz</code> / <code>/activos</code>: Matriz de Inversión y Estado Operativo (ON/OFF) por Moneda\n"
             "• <code>/cashflow</code>: Reporte financiero de flujo de caja y ROI\n"
             "• <code>/mode [trend|target|scalper]</code>: Cambiar modo de operación\n"
             "• <code>/stats [horas]</code>: Estadísticas de decisiones (HOLD, BUY, SELL)\n"
@@ -481,6 +507,8 @@ class TelegramListener:
             await self.status_command(update, context)
         elif "/wallet" in text or text == "👝 /wallet":
             await self.wallet_command(update, context)
+        elif "/matriz" in text or "/activos" in text or "/matrix" in text or text == "📋 /matriz":
+            await self.matrix_command(update, context)
         elif "/cashflow" in text or text == "📈 /cashflow":
             await self.cashflow_command(update, context)
         elif "/stats" in text or text == "📊 /stats":
@@ -816,6 +844,14 @@ class TelegramListener:
         except Exception as e:
             await update.message.reply_text(f"❌ <b>Error al consultar billetera:</b> {html.escape(str(e))}", parse_mode="HTML")
 
+    async def matrix_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await self.verify_user(update): return
+        try:
+            msg, markup = self._get_matrix_payload()
+            await update.message.reply_text(msg, parse_mode="HTML", reply_markup=markup)
+        except Exception as e:
+            await update.message.reply_text(f"❌ <b>Error al consultar matriz:</b> {html.escape(str(e))}", parse_mode="HTML")
+
     async def why_block_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self.verify_user(update): return
         try:
@@ -907,6 +943,10 @@ class TelegramListener:
 
             elif data == "nav:wallet":
                 msg, markup = self._get_wallet_payload()
+                await query.edit_message_text(msg, parse_mode="HTML", reply_markup=markup)
+
+            elif data == "nav:matrix":
+                msg, markup = self._get_matrix_payload()
                 await query.edit_message_text(msg, parse_mode="HTML", reply_markup=markup)
 
             elif data == "cmd:ask_reset_pnl":
@@ -1030,6 +1070,7 @@ class TelegramListener:
             commands = [
                 BotCommand("status", "Panel de estado general"),
                 BotCommand("wallet", "Billetera y posiciones abiertas"),
+                BotCommand("matriz", "Matriz de Activos y Estado ON/OFF"),
                 BotCommand("cashflow", "Flujo de caja y rentabilidad ROI"),
                 BotCommand("stats", "Estadísticas de decisiones"),
                 BotCommand("why_block", "Últimos 10 bloqueos de seguridad"),
@@ -1060,6 +1101,9 @@ class TelegramListener:
         app.add_handler(CommandHandler("status", self.status_command))
         app.add_handler(CommandHandler("wallet", self.wallet_command))
         app.add_handler(CommandHandler("billetera", self.wallet_command))
+        app.add_handler(CommandHandler("matriz", self.matrix_command))
+        app.add_handler(CommandHandler("activos", self.matrix_command))
+        app.add_handler(CommandHandler("matrix", self.matrix_command))
         app.add_handler(CommandHandler("stats", self.stats_command))
         app.add_handler(CommandHandler("pause", self.pause_command))
         app.add_handler(CommandHandler("resume", self.resume_command))
