@@ -27,6 +27,8 @@ class Trade(Base):
     exchange = Column(String)
     is_paper = Column(Boolean, default=True)
     agent_id = Column(String, default="legacy", nullable=True)
+    dca_step = Column(Integer, default=1, nullable=True)
+    exit_reason = Column(String, nullable=True)
 
 class Portfolio(Base):
     __tablename__ = 'portfolio'

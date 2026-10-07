@@ -43,6 +43,26 @@ risk:
   trailing_stop_positive: 0.03
   min_order_usd: 0.10
 
+  market_bias:
+    enabled: true                   # BTC Bias: Solo comprar especulativas si BTC 1h >= EMA 50
+    btc_symbol: "BTC/USDT"
+    timeframe: "1h"
+    ema_period: 50
+    cache_ttl_seconds: 60
+
+  micro_dca:
+    enabled: true                   # Entrada en 2 tramos
+    initial_tranche_pct: 0.5333
+    pullback_tranche_pct: 0.4667
+    pullback_min_pct: 0.010
+    pullback_max_pct: 0.040
+
+  profit_harvest:
+    enabled: true
+    threshold_pct: 1.00             # +100% ganancia en memes/anomalías
+    threshold_usd: 15.00
+    harvest_ratio: 1.00
+
 strategies:
   active: "ema_crossover"
   ema_crossover:

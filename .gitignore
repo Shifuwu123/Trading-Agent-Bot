@@ -18,8 +18,9 @@ __pycache__/
 *.db-wal
 *.sqlite3
 
-# Logs
+# Logs y Cache
 logs/
+data/cache/
 *.csv
 *.log
 

@@ -25,6 +25,34 @@ class BotConfig(BaseModel):
     base_currency: str = "USDT"
     fiat_currency: str = "CLP"
 
+class TimeStopConfig(BaseModel):
+    enabled: bool = True
+    min_duration_minutes: int = 120        # Tiempo mínimo de maduración antes de evaluar salida
+    consecutive_cycles_required: int = 3   # Seguro: 3 ciclos consecutivos cerrando en zona de pérdida
+    max_loss_pct: float = 0.02             # Pérdida máxima acotada al ejecutar Time-Stop (-2.0%)
+    hard_stop_loss_pct: float = 0.045      # Hard Stop de emergencia absoluta (flash crash: -4.5%)
+    oversold_grace_enabled: bool = True    # Gracia si detecta rebote o sobreventa temporal
+
+class MarketBiasConfig(BaseModel):
+    enabled: bool = True
+    btc_symbol: str = "BTC/USDT"
+    timeframe: str = "1h"
+    ema_period: int = 50
+    cache_ttl_seconds: int = 60
+
+class ProfitHarvestConfig(BaseModel):
+    enabled: bool = True
+    threshold_pct: float = 1.00            # Ganancia umbral (+100%) para cosechar
+    threshold_usd: float = 15.00           # Ganancia en USD mínima para cosechar
+    harvest_ratio: float = 1.00            # 1.0 = liquidar posición completa de ganancia extraordinaria
+
+class MicroDCAConfig(BaseModel):
+    enabled: bool = True
+    initial_tranche_pct: float = 0.5333    # Tramo 1: ~$0.40 USD de $0.75 USD
+    pullback_tranche_pct: float = 0.4667   # Tramo 2: ~$0.35 USD de $0.75 USD
+    pullback_min_pct: float = 0.006        # Retroceso mínimo -0.6% para gatillar Tramo 2
+    pullback_max_pct: float = 0.025        # Retroceso máximo -2.5% para Tramo 2
+
 class RiskConfig(BaseModel):
     max_open_positions: int = 20
     max_capital_exposure_pct: float = 0.30
@@ -38,6 +66,10 @@ class RiskConfig(BaseModel):
     trailing_stop: bool = True
     trailing_stop_positive: float = 0.02
     min_order_usd: float = 0.10
+    time_stop: TimeStopConfig = Field(default_factory=TimeStopConfig)
+    market_bias: MarketBiasConfig = Field(default_factory=MarketBiasConfig)
+    profit_harvest: ProfitHarvestConfig = Field(default_factory=ProfitHarvestConfig)
+    micro_dca: MicroDCAConfig = Field(default_factory=MicroDCAConfig)
 
 class AgentMetadataConfig(BaseModel):
     name: str = "UnnamedAgent"

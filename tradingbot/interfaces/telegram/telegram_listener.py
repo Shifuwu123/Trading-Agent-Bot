@@ -487,6 +487,7 @@ class TelegramListener:
             "• <code>/sell &lt;symbol&gt; &lt;cantidad&gt;</code>: Venta manual (con confirmación interactiva)\n"
             "• <code>/deposit &lt;monto&gt; [nota]</code>: Registrar depósito en cuenta simulada\n"
             "• <code>/expense &lt;monto&gt; [nota]</code>: Registrar gasto operativo\n"
+            "• <code>/monetizar &lt;activo&gt;</code> / <code>/monetize_asset &lt;activo&gt;</code>: Liquidar/cosechar ganancia a saldo USDT\n"
             "• <code>/reset_pnl</code>: Reiniciar contador de ganancias y PnL acumulado a $0.00\n"
             "• <code>/menu</code>: Activar o refrescar el teclado táctil inferior"
         )
@@ -515,6 +516,8 @@ class TelegramListener:
             await self.stats_command(update, context)
         elif "/mode" in text or text == "⚙️ /mode":
             await self.mode_command(update, context)
+        elif "/monetizar" in text or "/monetize" in text:
+            await self.monetize_asset_command(update, context)
         elif "/help" in text or text == "❓ /help":
             await self.help_command(update, context)
         elif "/menu" in text:
@@ -871,6 +874,47 @@ class TelegramListener:
         )
         await update.message.reply_text(msg, parse_mode="HTML", reply_markup=self._build_reset_pnl_confirmation_keyboard())
 
+    async def monetize_asset_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await self.verify_user(update): return
+        if not context.args or len(context.args) < 1:
+            await update.message.reply_text(
+                "Uso: <code>/monetizar &lt;SIMBOLO&gt; [PRECIO]</code>\n"
+                "Ejemplo: <code>/monetizar SOL</code> o <code>/monetize_asset DOGE</code>\n\n"
+                "<i>Liquida la posición en ese activo, realiza la ganancia acumulada y acredita el 100% de los fondos a tu billetera líquida en USDT.</i>",
+                parse_mode="HTML"
+            )
+            return
+
+        symbol = context.args[0].upper().strip()
+        base_asset = symbol.split('/')[0]
+        price_override = None
+        if len(context.args) > 1:
+            try:
+                price_override = float(context.args[1])
+            except ValueError:
+                pass
+
+        try:
+            res = await self.bot_instance.portfolio_manager.monetize_asset_async(base_asset, price=price_override, is_paper=True)
+            if res.get("status") == "error":
+                await update.message.reply_text(f"❌ <b>Error:</b> {res.get('message')}", parse_mode="HTML")
+                return
+
+            msg = (
+                f"💰 <b>MONETIZACIÓN EXITOSA: {res['asset']}</b>\n\n"
+                f"🎉 Se liquidó la posición y acreditó a tu billetera líquida:\n"
+                f"• <b>Cantidad:</b> {res['quantity']:.4f} {res['asset']}\n"
+                f"• <b>Precio Ejecución:</b> ${res['price']:,.4f} USDT\n"
+                f"• <b>Total Acreditado:</b> 🟢 <b>+${res['total_credited']:,.2f} USD</b>\n"
+                f"• <b>Ganancia Neta (PnL):</b> +${res['realized_pnl']:,.2f} USD (+{res['pnl_pct']*100:.1f}%)\n"
+                f"• <b>Nuevo Saldo Líquido:</b> <b>${res['new_wallet_balance']:,.2f} USDT</b>"
+            )
+            await update.message.reply_text(msg, parse_mode="HTML")
+            registrar_log("CASHFLOW", f"MONETIZACION_{base_asset}: +${res['realized_pnl']:.2f} USD. Saldo nuevo: ${res['new_wallet_balance']:.2f} USDT")
+        except Exception as e:
+            log.error(f"Error monetizing asset via Telegram: {e}")
+            await update.message.reply_text(f"❌ <b>Error al monetizar {html.escape(symbol)}:</b> {html.escape(str(e))}", parse_mode="HTML")
+
 
     # -------------------------------------------------------------
     # Inline Callback Handler
@@ -1081,6 +1125,7 @@ class TelegramListener:
                 BotCommand("status_momentum", "Estado Momentum (Tier 2)"),
                 BotCommand("status_macro", "Estado MacroTrader (BTC/ETH)"),
                 BotCommand("status_speculative", "Estado Speculative (Tier 3)"),
+                BotCommand("monetizar", "Liquidar y cosechar ganancias de un activo"),
                 BotCommand("menu", "Teclado táctil rápido"),
                 BotCommand("start", "Menú principal y comandos"),
                 BotCommand("help", "Ayuda de comandos"),
@@ -1114,6 +1159,8 @@ class TelegramListener:
         app.add_handler(CommandHandler("expense", self.expense_command))
         app.add_handler(CommandHandler("cashflow", self.cashflow_command))
         app.add_handler(CommandHandler("reset_pnl", self.reset_pnl_command))
+        app.add_handler(CommandHandler("monetize_asset", self.monetize_asset_command))
+        app.add_handler(CommandHandler("monetizar", self.monetize_asset_command))
         app.add_handler(CommandHandler("why_block", self.why_block_command))
 
         # Sub-Agentes Commands

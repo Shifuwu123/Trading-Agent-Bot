@@ -47,6 +47,19 @@ risk:
   trailing_stop_positive: 0.008    # Trailing ajustado para tendencias lentas
   min_order_usd: 0.10
 
+  micro_dca:
+    enabled: true                   # Entrada escalonada en BTC/ETH
+    initial_tranche_pct: 0.50
+    pullback_tranche_pct: 0.50
+    pullback_min_pct: 0.004
+    pullback_max_pct: 0.015
+
+  profit_harvest:
+    enabled: true
+    threshold_pct: 0.50             # +50% en macro
+    threshold_usd: 15.00
+    harvest_ratio: 1.00
+
 strategies:
   active: "ema_macro"              # ← Nueva estrategia EMA 50/200
   ema_macro:

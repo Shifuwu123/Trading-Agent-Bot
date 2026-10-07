@@ -72,6 +72,38 @@ risk:
   # Distancia porcentual del Trailing Stop respecto al pico máximo del precio (0.02 = 2%).
   trailing_stop_positive: 0.02
 
+  # Salida por Tiempo Inteligente (Time-Based Stop) con seguro multi-ciclo
+  time_stop:
+    enabled: true
+    min_duration_minutes: 120
+    consecutive_cycles_required: 3
+    max_loss_pct: 0.02
+    hard_stop_loss_pct: 0.045
+    oversold_grace_enabled: true
+
+  # Filtro de Tendencia Macro de Bitcoin para Altcoins
+  market_bias:
+    enabled: true
+    btc_symbol: "BTC/USDT"
+    timeframe: "1h"
+    ema_period: 50
+    cache_ttl_seconds: 60
+
+  # Entrada Escalonada (Order Splitting / Micro DCA)
+  micro_dca:
+    enabled: true
+    initial_tranche_pct: 0.5333
+    pullback_tranche_pct: 0.4667
+    pullback_min_pct: 0.006
+    pullback_max_pct: 0.025
+
+  # Cosecha Automática de Ganancias (Profit Harvesting)
+  profit_harvest:
+    enabled: true
+    threshold_pct: 1.00
+    threshold_usd: 15.00
+    harvest_ratio: 1.00
+
 strategies:
   # Nombre de la estrategia principal que utilizará el bot para generar las señales de BUY/SELL.
   active: "ema_crossover"

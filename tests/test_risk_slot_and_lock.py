@@ -134,6 +134,7 @@ async def test_individual_coin_reserve_order_size():
     clp_converter = MagicMock()
     clp_converter.convert_usd_to_clp.return_value = 50000
 
+    config.risk.micro_dca.enabled = False
     te = TradeEngine(config, rm, pm, strategy, notifier, clp_converter)
 
     mock_collector = MagicMock()

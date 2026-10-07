@@ -71,6 +71,34 @@ risk:
   trailing_stop_positive: 0.02
   min_order_usd: 0.10
 
+  time_stop:
+    enabled: true
+    min_duration_minutes: 120        # Seguro: 120 min de maduración antes de evaluar corte
+    consecutive_cycles_required: 3   # Seguro: 3 minutos consecutivos cerrando en pérdida
+    max_loss_pct: 0.02              # Salida acotada
+    hard_stop_loss_pct: 0.045       # Hard Stop de emergencia absoluta (flash crash: -4.5%)
+    oversold_grace_enabled: true
+
+  market_bias:
+    enabled: true                   # BTC Market Bias Filter: Solo compra si BTC 1h >= EMA 50
+    btc_symbol: "BTC/USDT"
+    timeframe: "1h"
+    ema_period: 50
+    cache_ttl_seconds: 60
+
+  micro_dca:
+    enabled: true                   # Entrada escalonada en 2 tramos
+    initial_tranche_pct: 0.5333     # Tramo 1: ~$0.40 USD de $0.75 USD
+    pullback_tranche_pct: 0.4667    # Tramo 2: ~$0.35 USD de $0.75 USD
+    pullback_min_pct: 0.006         # Retroceso mínimo -0.6% hacia EMA 21
+    pullback_max_pct: 0.025         # Retroceso máximo -2.5%
+
+  profit_harvest:
+    enabled: true
+    threshold_pct: 1.00             # +100% de ganancia
+    threshold_usd: 15.00            # o +$15.00 USD
+    harvest_ratio: 1.00
+
 strategies:
   active: "ema_crossover"
   ema_crossover:

@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
 
-from sqlalchemy import create_engine, select, update, event
+from sqlalchemy import create_engine, select, update, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -44,6 +44,20 @@ class DatabaseSession:
                         pass
 
             Base.metadata.create_all(bind=cls._engine)
+
+            # Migraciones ligeras automáticas para tablas existentes en SQLite
+            if is_sqlite:
+                with cls._engine.connect() as conn:
+                    try:
+                        conn.execute(text("ALTER TABLE trades ADD COLUMN dca_step INTEGER DEFAULT 1"))
+                        conn.commit()
+                    except Exception:
+                        pass
+                    try:
+                        conn.execute(text("ALTER TABLE trades ADD COLUMN exit_reason TEXT"))
+                        conn.commit()
+                    except Exception:
+                        pass
             cls._SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=cls._engine)
 
             # Motor asíncrono para operaciones no bloqueantes
@@ -460,7 +474,7 @@ class PortfolioManager:
     # Asíncronos (aiosqlite + AsyncSession para concurrencia limpia)
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def record_open_trade_async(self, execution_data: Dict[str, Any], strategy: str = "default", agent_id: str = "legacy") -> Trade:
+    async def record_open_trade_async(self, execution_data: Dict[str, Any], strategy: str = "default", agent_id: str = "legacy", dca_step: int = 1, exit_reason: Optional[str] = None) -> Trade:
         """Registra una nueva operación de compra/apertura asíncronamente."""
         async with DatabaseSession.get_async_session() as session:
             try:
@@ -476,6 +490,8 @@ class PortfolioManager:
                     strategy=strategy,
                     exchange=self.settings.exchange_id,
                     agent_id=agent_id,
+                    dca_step=dca_step,
+                    exit_reason=exit_reason,
                     opened_at=datetime.utcnow()
                 )
                 session.add(trade)
@@ -494,14 +510,14 @@ class PortfolioManager:
                     await self._update_virtual_wallet_async(session, execution_data["side"], execution_data["amount"], execution_data["price"])
 
                 await session.commit()
-                log.info(f"[AsyncDB] Recorded open trade {trade.trade_id} for {trade.symbol} (Agent: {agent_id})")
+                log.info(f"[AsyncDB] Recorded open trade {trade.trade_id} for {trade.symbol} (Agent: {agent_id}, DCA Step: {dca_step})")
                 return trade
             except Exception as e:
                 await session.rollback()
                 log.error(f"[AsyncDB] Failed to record open trade: {e}")
                 raise
 
-    async def record_close_trade_async(self, trade_id: str, execution_data: Dict[str, Any]) -> Optional[Trade]:
+    async def record_close_trade_async(self, trade_id: str, execution_data: Dict[str, Any], exit_reason: Optional[str] = None) -> Optional[Trade]:
         """Registra el cierre de una operación asíncronamente."""
         async with DatabaseSession.get_async_session() as session:
             try:
@@ -515,6 +531,7 @@ class PortfolioManager:
                 trade.price_exit = price_exit_dec
                 trade.status = "CLOSED"
                 trade.closed_at = datetime.utcnow()
+                trade.exit_reason = exit_reason or execution_data.get("reason", trade.exit_reason)
 
                 if trade.side == "BUY":
                     trade.pnl = (price_exit_dec - trade.price_entry) * trade.quantity
@@ -537,11 +554,63 @@ class PortfolioManager:
                     await self._update_virtual_wallet_async(session, execution_data["side"], execution_data["amount"], execution_data["price"])
 
                 await session.commit()
-                log.info(f"[AsyncDB] Recorded close trade {trade.trade_id}. PnL: {trade.pnl}")
+                log.info(f"[AsyncDB] Recorded close trade {trade.trade_id}. PnL: {trade.pnl}, Reason: {trade.exit_reason}")
                 return trade
             except Exception as e:
                 await session.rollback()
                 log.error(f"[AsyncDB] Failed to record close trade: {e}")
+                raise
+
+    async def consolidate_dca_position_async(self, trade_id: str, execution_data: Dict[str, Any], dca_step: int = 2) -> Optional[Trade]:
+        """
+        Consolida una entrada escalonada (Micro DCA Tranche 2) en una posición abierta existente:
+        - Actualiza cantidad total acumulada.
+        - Recalcula precio de entrada promedio ponderado.
+        - Descuenta el capital del tramo 2 de la billetera virtual.
+        - Actualiza el registro de portfolio.
+        """
+        async with DatabaseSession.get_async_session() as session:
+            try:
+                result = await session.execute(select(Trade).filter(Trade.trade_id == trade_id, Trade.status == "OPEN"))
+                trade = result.scalars().first()
+                if not trade:
+                    log.warning(f"[AsyncDB] Trade {trade_id} not found to consolidate DCA.")
+                    return None
+
+                old_qty = Decimal(str(trade.quantity))
+                old_entry = Decimal(str(trade.price_entry))
+                add_qty = Decimal(str(execution_data["amount"]))
+                add_price = Decimal(str(execution_data["price"]))
+
+                new_qty = old_qty + add_qty
+                if new_qty > Decimal("0.0"):
+                    new_entry = ((old_qty * old_entry) + (add_qty * add_price)) / new_qty
+                else:
+                    new_entry = add_price
+
+                trade.quantity = new_qty
+                trade.price_entry = new_entry
+                trade.dca_step = dca_step
+
+                await self._update_portfolio_entry_async(
+                    session,
+                    execution_data["symbol"],
+                    execution_data["side"],
+                    execution_data["amount"],
+                    execution_data["price"],
+                    execution_data["is_paper"],
+                    agent_id=trade.agent_id or "legacy"
+                )
+
+                if execution_data["is_paper"]:
+                    await self._update_virtual_wallet_async(session, execution_data["side"], execution_data["amount"], execution_data["price"])
+
+                await session.commit()
+                log.info(f"[AsyncDB] Consolidado Micro DCA en {trade.symbol} ({trade.trade_id}): nuevo qty={new_qty:.6f}, avg_entry=${new_entry:.4f}, step={dca_step}")
+                return trade
+            except Exception as e:
+                await session.rollback()
+                log.error(f"[AsyncDB] Error consolidating DCA position: {e}")
                 raise
 
     async def _update_portfolio_entry_async(self, session: AsyncSession, symbol: str, side: str, amount: float, price: float, is_paper: bool, agent_id: str = "legacy"):
@@ -867,4 +936,218 @@ class PortfolioManager:
                 for p in portfolio
             )
             return max(0.0, cash + positions_val)
+
+    def monetize_asset(self, asset: str, price: Optional[float] = None, is_paper: bool = True) -> dict:
+        """
+        Liquida/monetiza la tenencia completa de un activo en la cartera,
+        acredita el 100% de los fondos brutos a la billetera digital (USDT),
+        pone en cero el holding de portfolio y archiva la ganancia realizada en trades (sync).
+        """
+        session = DatabaseSession.get_session()
+        try:
+            base_asset = asset.split('/')[0] if '/' in asset else asset
+            portfolio = session.query(Portfolio).filter(
+                Portfolio.asset == base_asset,
+                Portfolio.is_paper == is_paper
+            ).first()
+
+            if not portfolio or float(portfolio.quantity or 0) <= 0:
+                return {"status": "error", "message": f"No hay fondos ni posición activa en {base_asset} para monetizar."}
+
+            qty = float(portfolio.quantity)
+            avg_px = float(portfolio.avg_price or 0.0)
+            exit_px = price if (price and price > 0) else float(portfolio.current_price or avg_px)
+            if exit_px <= 0:
+                exit_px = avg_px
+
+            total_credited = qty * exit_px
+            cost_basis = qty * avg_px
+            realized_pnl = total_credited - cost_basis
+            pnl_pct = (realized_pnl / cost_basis) if cost_basis > 0 else 0.0
+
+            # 1. Reset Portfolio entry
+            portfolio.quantity = Decimal("0.0")
+            portfolio.avg_price = Decimal("0.0")
+            portfolio.unrealized_pnl = Decimal("0.0")
+            portfolio.current_price = Decimal(str(exit_px))
+
+            # 2. Credit Digital Wallet
+            telegram_id = str(self.settings.telegram_chat_id) or "default"
+            wallet = session.query(DigitalWallet).filter(
+                DigitalWallet.telegram_id == telegram_id,
+                DigitalWallet.is_paper == is_paper
+            ).first()
+            if not wallet:
+                wallet = DigitalWallet(telegram_id=telegram_id, balance_usd=Decimal("50.0"), is_paper=is_paper)
+                session.add(wallet)
+
+            wallet.balance_usd = Decimal(str(wallet.balance_usd)) + Decimal(str(total_credited))
+
+            # 3. Close open trades or record historical closed trade
+            now = datetime.utcnow()
+            open_trades = session.query(Trade).filter(
+                Trade.symbol.like(f"{base_asset}/%"),
+                Trade.status == "OPEN",
+                Trade.is_paper == is_paper
+            ).all()
+
+            for t in open_trades:
+                t.status = "CLOSED"
+                t.price_exit = Decimal(str(exit_px))
+                t.closed_at = now
+                t.exit_reason = "Manual / Auto Monetization"
+                t.pnl = (Decimal(str(exit_px)) - t.price_entry) * t.quantity
+                t.pnl_pct = (Decimal(str(exit_px)) - t.price_entry) / t.price_entry if t.price_entry > 0 else 0
+
+            # Registrar trade de liquidación global si no había trades abiertos (holding histórico)
+            if not open_trades:
+                harvest_trade = Trade(
+                    trade_id=f"harvest_{base_asset}_{int(now.timestamp())}",
+                    symbol=f"{base_asset}/USDT",
+                    side="BUY",
+                    order_type="MARKET",
+                    quantity=Decimal(str(qty)),
+                    price_entry=Decimal(str(avg_px)),
+                    price_exit=Decimal(str(exit_px)),
+                    pnl=Decimal(str(realized_pnl)),
+                    pnl_pct=Decimal(str(pnl_pct)),
+                    status="CLOSED",
+                    strategy="ProfitHarvesting",
+                    opened_at=now,
+                    closed_at=now,
+                    exchange=self.settings.exchange_id,
+                    is_paper=is_paper,
+                    agent_id="scalper_t1",
+                    dca_step=1,
+                    exit_reason="Monetization / Profit Realization"
+                )
+                session.add(harvest_trade)
+
+            session.commit()
+            log.info(f"[PortfolioManager] Monetized {qty} {base_asset} at ${exit_px:,.4f}. Realized PnL: +${realized_pnl:,.2f} USD. New wallet balance: ${wallet.balance_usd:,.2f} USDT.")
+            return {
+                "status": "success",
+                "asset": base_asset,
+                "quantity": qty,
+                "price": exit_px,
+                "total_credited": total_credited,
+                "realized_pnl": realized_pnl,
+                "pnl_pct": pnl_pct,
+                "new_wallet_balance": float(wallet.balance_usd)
+            }
+        except Exception as e:
+            session.rollback()
+            log.error(f"[PortfolioManager] Error monetizing asset {asset}: {e}")
+            raise
+        finally:
+            session.close()
+
+    async def monetize_asset_async(self, asset: str, price: Optional[float] = None, is_paper: bool = True) -> dict:
+        """
+        Versión asíncrona de monetize_asset.
+        """
+        async with DatabaseSession.get_async_session() as session:
+            try:
+                base_asset = asset.split('/')[0] if '/' in asset else asset
+                res = await session.execute(
+                    select(Portfolio).filter(
+                        Portfolio.asset == base_asset,
+                        Portfolio.is_paper == is_paper
+                    )
+                )
+                portfolio = res.scalars().first()
+
+                if not portfolio or float(portfolio.quantity or 0) <= 0:
+                    return {"status": "error", "message": f"No hay fondos ni posición activa en {base_asset} para monetizar."}
+
+                qty = float(portfolio.quantity)
+                avg_px = float(portfolio.avg_price or 0.0)
+                exit_px = price if (price and price > 0) else float(portfolio.current_price or avg_px)
+                if exit_px <= 0:
+                    exit_px = avg_px
+
+                total_credited = qty * exit_px
+                cost_basis = qty * avg_px
+                realized_pnl = total_credited - cost_basis
+                pnl_pct = (realized_pnl / cost_basis) if cost_basis > 0 else 0.0
+
+                # 1. Reset Portfolio entry
+                portfolio.quantity = Decimal("0.0")
+                portfolio.avg_price = Decimal("0.0")
+                portfolio.unrealized_pnl = Decimal("0.0")
+                portfolio.current_price = Decimal(str(exit_px))
+
+                # 2. Credit Digital Wallet
+                telegram_id = str(self.settings.telegram_chat_id) or "default"
+                w_res = await session.execute(
+                    select(DigitalWallet).filter(
+                        DigitalWallet.telegram_id == telegram_id,
+                        DigitalWallet.is_paper == is_paper
+                    )
+                )
+                wallet = w_res.scalars().first()
+                if not wallet:
+                    wallet = DigitalWallet(telegram_id=telegram_id, balance_usd=Decimal("50.0"), is_paper=is_paper)
+                    session.add(wallet)
+
+                wallet.balance_usd = Decimal(str(wallet.balance_usd)) + Decimal(str(total_credited))
+
+                # 3. Close open trades or record historical closed trade
+                now = datetime.utcnow()
+                tr_res = await session.execute(
+                    select(Trade).filter(
+                        Trade.symbol.like(f"{base_asset}/%"),
+                        Trade.status == "OPEN",
+                        Trade.is_paper == is_paper
+                    )
+                )
+                open_trades = tr_res.scalars().all()
+
+                for t in open_trades:
+                    t.status = "CLOSED"
+                    t.price_exit = Decimal(str(exit_px))
+                    t.closed_at = now
+                    t.exit_reason = "Manual / Auto Monetization"
+                    t.pnl = (Decimal(str(exit_px)) - t.price_entry) * t.quantity
+                    t.pnl_pct = (Decimal(str(exit_px)) - t.price_entry) / t.price_entry if t.price_entry > 0 else 0
+
+                if not open_trades:
+                    harvest_trade = Trade(
+                        trade_id=f"harvest_{base_asset}_{int(now.timestamp())}",
+                        symbol=f"{base_asset}/USDT",
+                        side="BUY",
+                        order_type="MARKET",
+                        quantity=Decimal(str(qty)),
+                        price_entry=Decimal(str(avg_px)),
+                        price_exit=Decimal(str(exit_px)),
+                        pnl=Decimal(str(realized_pnl)),
+                        pnl_pct=Decimal(str(pnl_pct)),
+                        status="CLOSED",
+                        strategy="ProfitHarvesting",
+                        opened_at=now,
+                        closed_at=now,
+                        exchange=self.settings.exchange_id,
+                        is_paper=is_paper,
+                        agent_id="scalper_t1",
+                        dca_step=1,
+                        exit_reason="Monetization / Profit Realization"
+                    )
+                    session.add(harvest_trade)
+
+                await session.commit()
+                log.info(f"[AsyncDB] Monetized {qty} {base_asset} at ${exit_px:,.4f}. Realized PnL: +${realized_pnl:,.2f} USD. New wallet balance: ${wallet.balance_usd:,.2f} USDT.")
+                return {
+                    "status": "success",
+                    "asset": base_asset,
+                    "quantity": qty,
+                    "price": exit_px,
+                    "total_credited": total_credited,
+                    "realized_pnl": realized_pnl,
+                    "pnl_pct": pnl_pct,
+                    "new_wallet_balance": float(wallet.balance_usd)
+                }
+            except Exception as e:
+                await session.rollback()
+                log.error(f"[AsyncDB] Error monetizing asset {asset}: {e}")
+                raise
 
