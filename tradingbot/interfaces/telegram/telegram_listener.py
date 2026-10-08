@@ -24,6 +24,14 @@ from telegram.ext import (
 )
 from tradingbot.core.config import get_settings
 from tradingbot.utils.logger import log, registrar_log
+from tradingbot.utils.tz import (
+    now_chile,
+    format_chile,
+    format_chile_human,
+    get_chile_day_range_in_utc,
+    get_active_hours_info,
+    explain_schedule_message,
+)
 
 
 class TelegramListener:
@@ -50,8 +58,8 @@ class TelegramListener:
         keyboard = [
             [KeyboardButton("📊 /status"), KeyboardButton("👝 /wallet")],
             [KeyboardButton("📋 /matriz"), KeyboardButton("📈 /cashflow")],
-            [KeyboardButton("📊 /stats"), KeyboardButton("⚙️ /mode")],
-            [KeyboardButton("❓ /help")],
+            [KeyboardButton("📊 /stats"), KeyboardButton("🛡️ /why_block")],
+            [KeyboardButton("🕒 /horarios"), KeyboardButton("❓ /help")],
         ]
         return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -89,11 +97,9 @@ class TelegramListener:
                 ],
             ])
 
-        keyboard.extend([
-            [
-                InlineKeyboardButton("⚙️ Modo de Trading", callback_data="nav:modes"),
-                toggle_button,
-            ],
+        keyboard.append([
+            InlineKeyboardButton("⚙️ Modo de Trading", callback_data="nav:modes"),
+            toggle_button,
         ])
         return InlineKeyboardMarkup(keyboard)
 
@@ -218,6 +224,19 @@ class TelegramListener:
         ]
         return InlineKeyboardMarkup(keyboard)
 
+    def _build_horarios_keyboard(self) -> InlineKeyboardMarkup:
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Actualizar Horarios", callback_data="nav:horarios"),
+                InlineKeyboardButton("⬅️ Volver a Estado", callback_data="nav:status"),
+            ]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
+    def _get_horarios_payload(self) -> tuple[str, InlineKeyboardMarkup]:
+        msg = explain_schedule_message(start_utc=13, end_utc=17)
+        return msg, self._build_horarios_keyboard()
+
     def _get_matrix_payload(self) -> tuple[str, InlineKeyboardMarkup]:
         if hasattr(self.bot_instance, "format_matrix_message"):
             msg = self.bot_instance.format_matrix_message()
@@ -282,8 +301,9 @@ class TelegramListener:
                 time_filter_start = now - timedelta(hours=hours)
                 title_suffix = f"Últimas {hours} hora(s)"
             else:
-                time_filter_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                title_suffix = "Hoy (Desde 00:00 UTC)"
+                start_utc, _ = get_chile_day_range_in_utc()
+                time_filter_start = start_utc
+                title_suffix = "Hoy (Hora Chile)"
 
             logs = session.query(DecisionLog).filter(DecisionLog.timestamp >= time_filter_start).all()
 
@@ -416,8 +436,8 @@ class TelegramListener:
 
         session = DatabaseSession.get_session()
         try:
-            now = datetime.utcnow()
-            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            start_utc, _ = get_chile_day_range_in_utc()
+            today_start = start_utc
 
             total_historical = session.query(DecisionLog).filter(
                 DecisionLog.decision == "BLOCKED"
@@ -438,12 +458,12 @@ class TelegramListener:
             msg = (
                 "🛡️ <b>Últimos 10 Bloqueos de Seguridad</b>\n"
                 "<i>(Historial persistido en base de datos)</i>\n\n"
-                f"• <b>Hoy (Desde 00:00 UTC):</b> {today_blocked} bloqueos\n"
+                f"• <b>Hoy (Hora Chile):</b> {today_blocked} bloqueos\n"
                 f"• <b>Total Histórico en BD:</b> {total_historical} eventos\n\n"
-                "<b>Eventos Recientes:</b>\n"
+                "<b>Eventos Recientes (Hora Chile):</b>\n"
             )
             for idx, log_entry in enumerate(logs, 1):
-                ts = log_entry.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                ts = format_chile(log_entry.timestamp)
                 sym = html.escape(str(log_entry.symbol))
                 reason = html.escape(str(log_entry.reason or "Sin detalle"))
                 msg += f"<b>{idx}. {sym}</b> ({ts})\n   Motivo: <code>{reason}</code>\n\n"
@@ -477,6 +497,7 @@ class TelegramListener:
             "• <code>/wallet</code>: Detalle de billetera (saldo disponible y holdings)\n"
             "• <code>/matriz</code> / <code>/activos</code>: Matriz de Inversión y Estado Operativo (ON/OFF) por Moneda\n"
             "• <code>/cashflow</code>: Reporte financiero de flujo de caja y ROI\n"
+            "• <code>/horarios</code>: Conversor de horarios y monitor de ventanas de volatilidad (Chile ⇄ UTC)\n"
             "• <code>/mode [trend|target|scalper]</code>: Cambiar modo de operación\n"
             "• <code>/stats [horas]</code>: Estadísticas de decisiones (HOLD, BUY, SELL)\n"
             "• <code>/why_block</code>: Ver últimas 10 operaciones bloqueadas por riesgo\n"
@@ -514,6 +535,10 @@ class TelegramListener:
             await self.cashflow_command(update, context)
         elif "/stats" in text or text == "📊 /stats":
             await self.stats_command(update, context)
+        elif "/why_block" in text or text == "🛡️ /why_block":
+            await self.why_block_command(update, context)
+        elif "/horarios" in text or "/horario" in text or "/time" in text or "/hora" in text or text == "🕒 /horarios":
+            await self.horarios_command(update, context)
         elif "/mode" in text or text == "⚙️ /mode":
             await self.mode_command(update, context)
         elif "/monetizar" in text or "/monetize" in text:
@@ -915,6 +940,14 @@ class TelegramListener:
             log.error(f"Error monetizing asset via Telegram: {e}")
             await update.message.reply_text(f"❌ <b>Error al monetizar {html.escape(symbol)}:</b> {html.escape(str(e))}", parse_mode="HTML")
 
+    async def horarios_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await self.verify_user(update): return
+        try:
+            msg, markup = self._get_horarios_payload()
+            await update.message.reply_text(msg, parse_mode="HTML", reply_markup=markup)
+        except Exception as e:
+            await update.message.reply_text(f"❌ <b>Error al consultar horarios:</b> {html.escape(str(e))}", parse_mode="HTML")
+
 
     # -------------------------------------------------------------
     # Inline Callback Handler
@@ -979,6 +1012,10 @@ class TelegramListener:
 
             elif data == "nav:why_block":
                 msg, markup = self._get_why_block_payload()
+                await query.edit_message_text(msg, parse_mode="HTML", reply_markup=markup)
+
+            elif data == "nav:horarios":
+                msg, markup = self._get_horarios_payload()
                 await query.edit_message_text(msg, parse_mode="HTML", reply_markup=markup)
 
             elif data == "nav:cashflow":
@@ -1162,6 +1199,10 @@ class TelegramListener:
         app.add_handler(CommandHandler("monetize_asset", self.monetize_asset_command))
         app.add_handler(CommandHandler("monetizar", self.monetize_asset_command))
         app.add_handler(CommandHandler("why_block", self.why_block_command))
+        app.add_handler(CommandHandler("horarios", self.horarios_command))
+        app.add_handler(CommandHandler("horario", self.horarios_command))
+        app.add_handler(CommandHandler("time", self.horarios_command))
+        app.add_handler(CommandHandler("hora", self.horarios_command))
 
         # Sub-Agentes Commands
         for aid in ["scalper_t1", "momentum_t2", "macro_btceth", "speculative_t3"]:

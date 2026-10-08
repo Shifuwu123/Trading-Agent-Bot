@@ -73,7 +73,11 @@ def registrar_log(tipo_registro: str, descripcion: str):
     También imprime en consola para facilitar el debugging cuando se corre 'CON TERMINAL'.
     """
     safe_desc = sanitize_sensitive_data(descripcion)
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        from tradingbot.utils.tz import now_chile
+        timestamp = now_chile().strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     row = [timestamp, tipo_registro.upper(), safe_desc]
     
     # Imprimir a consola

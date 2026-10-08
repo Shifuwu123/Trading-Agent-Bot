@@ -11,6 +11,7 @@ from tradingbot.execution.portfolio_manager import PortfolioManager, DatabaseSes
 from tradingbot.database.models import Trade
 from tradingbot.services.market_bias_service import BTCMarketBiasFilter
 from tradingbot.utils.logger import log, registrar_log
+from tradingbot.utils.tz import now_chile, format_chile, format_chile_human
 
 class TradeEngine:
     def __init__(
@@ -53,7 +54,8 @@ class TradeEngine:
 
     def generate_coin_loss_report(self, agent_id: str, symbol: str, base_usd: float, realized_pnl: float, closed_trades: list) -> str:
         """Genera un informe técnico forense en Markdown cuando una moneda agota sus fondos."""
-        timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+        now_dt = now_chile()
+        timestamp_str = now_dt.strftime('%Y%m%d_%H%M%S')
         safe_symbol = symbol.replace('/', '_')
         report_filename = f"informe_perdida_{agent_id}_{safe_symbol}_{timestamp_str}.md"
         report_path = os.path.join("/home/shifu/documentos-agy", report_filename)
@@ -61,7 +63,7 @@ class TradeEngine:
         lines = [
             f"# Informe Forense: Agotamiento de Fondos en {symbol}",
             f"",
-            f"**Fecha y Hora:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ",
+            f"**Fecha y Hora:** {format_chile_human(now_dt)}  ",
             f"**Sub-Agente:** `{agent_id}`  ",
             f"**Activo:** `{symbol}`  ",
             f"**Inversión Inicial Asignada:** ${base_usd:.2f} USD  ",
@@ -76,7 +78,7 @@ class TradeEngine:
             f"",
             f"## 2. Historial de Operaciones del Activo",
             f"",
-            f"| Trade ID | Lado | Cantidad | Precio Entrada | Precio Salida | PnL (USD) | PnL (%) | Estrategia | Fecha Cierre |",
+            f"| Trade ID | Lado | Cantidad | Precio Entrada | Precio Salida | PnL (USD) | PnL (%) | Estrategia | Fecha Cierre (Chile) |",
             f"|---|---|---|---|---|---|---|---|---|"
         ]
 
@@ -90,7 +92,8 @@ class TradeEngine:
             pnl_pct = float(getattr(t, "pnl_pct", 0.0) or 0.0) * 100
             strat = getattr(t, "strategy", "N/A")
             c_at = getattr(t, "closed_at", "N/A")
-            lines.append(f"| `{tid}` | {side} | {qty:.6f} | ${p_in:,.4f} | ${p_out:,.4f} | ${pnl:.4f} | {pnl_pct:.2f}% | {strat} | {c_at} |")
+            c_at_str = format_chile(c_at) if c_at != "N/A" else "N/A"
+            lines.append(f"| `{tid}` | {side} | {qty:.6f} | ${p_in:,.4f} | ${p_out:,.4f} | ${pnl:.4f} | {pnl_pct:.2f}% | {strat} | {c_at_str} |")
 
         lines.extend([
             f"",
