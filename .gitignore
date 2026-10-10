@@ -17,6 +17,7 @@ __pycache__/
 *.db-shm
 *.db-wal
 *.sqlite3
+backups_db/
 
 # Logs y Cache
 logs/

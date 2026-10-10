@@ -28,6 +28,28 @@ class DatabaseSession:
         if cls._engine is None:
             settings = get_settings()
             is_sqlite = "sqlite" in settings.database_url
+            
+            # Inicialización de almacenamiento en RAM y sync daemon si aplica
+            if is_sqlite and "/dev/shm" in settings.database_url:
+                try:
+                    from tradingbot.database.db_storage_manager import DBStorageManager
+                    from tradingbot.database.cloud_sync import CloudSyncProvider
+
+                    storage_mgr = DBStorageManager.get_instance(
+                        active_db_path=settings.active_db_path,
+                        persistent_db_path=settings.persistent_db_path,
+                        backup_dir=settings.db_backup_dir,
+                        sync_interval_seconds=settings.db_sync_interval_seconds
+                    )
+                    storage_mgr.ensure_ram_db_initialized()
+                    storage_mgr.start_background_sync()
+
+                    if getattr(settings, "cloud_sync_enabled", False):
+                        cloud_provider = CloudSyncProvider.from_settings(local_db_path=settings.active_db_path)
+                        cloud_provider.start_background_sync()
+                except Exception as e:
+                    log.warning(f"[DatabaseSession] Error inicializando DBStorageManager para RAM: {e}")
+
             connect_args = {"check_same_thread": False, "timeout": 15} if is_sqlite else {}
             cls._engine = create_engine(settings.database_url, connect_args=connect_args)
 
@@ -1150,4 +1172,35 @@ class PortfolioManager:
                 await session.rollback()
                 log.error(f"[AsyncDB] Error monetizing asset {asset}: {e}")
                 raise
+
+    def sync_ram_to_disk(self, create_backup: bool = False) -> dict:
+        """Sincroniza forzosamente la base de datos de RAM al disco persistente."""
+        try:
+            from tradingbot.database.db_storage_manager import DBStorageManager
+            mgr = DBStorageManager.get_instance()
+            return mgr.sync_to_disk(create_timestamped_backup=create_backup)
+        except Exception as e:
+            log.warning(f"Error sincronizando RAM a disco: {e}")
+            return {"success": False, "error": str(e)}
+
+    def run_db_housekeeping(self) -> dict:
+        """Ejecuta purgado de logs antiguos y optimización de base de datos."""
+        try:
+            from tradingbot.database.db_storage_manager import DBStorageManager
+            mgr = DBStorageManager.get_instance()
+            return mgr.run_housekeeping()
+        except Exception as e:
+            log.warning(f"Error ejecutando housekeeping: {e}")
+            return {"success": False, "error": str(e)}
+
+    def sync_to_cloud(self) -> dict:
+        """Ejecuta una réplica hacia la nube si está configurada."""
+        try:
+            from tradingbot.database.cloud_sync import CloudSyncProvider
+            provider = CloudSyncProvider.from_settings()
+            return provider.sync_now()
+        except Exception as e:
+            log.warning(f"Error en sync_to_cloud: {e}")
+            return {"success": False, "error": str(e)}
+
 

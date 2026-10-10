@@ -23,7 +23,15 @@ for i in {1..30}; do
     sleep 2
 done
 
-echo "🚀 Iniciando Trading Bot en sesión tmux '${SESSION_NAME}'..."
+# Preparación de Capa RAM (/dev/shm) para protección de MicroSD
+RAM_DB="/dev/shm/tradingbot.db"
+DISK_DB="${BOT_DIR}/tradingbot.db"
+if [ ! -f "${RAM_DB}" ] && [ -f "${DISK_DB}" ]; then
+    echo "⚡ Inicializando base de datos en memoria RAM (${RAM_DB}) desde disco..."
+    cp "${DISK_DB}" "${RAM_DB}" 2>/dev/null || true
+fi
+
+echo "🚀 Iniciando Trading Bot en sesión tmux '${SESSION_NAME}' (Capa RAM activa)..."
 tmux new-session -d -s "${SESSION_NAME}" "bash -c 'cd ${BOT_DIR} && ${VENV_PYTHON} main.py; echo \"[TradingBot finalizado con código \$?]\"; exec bash'"
 
 sleep 2

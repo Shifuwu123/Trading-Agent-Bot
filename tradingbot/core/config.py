@@ -88,7 +88,18 @@ class EnvSettings(BaseSettings):
     exchange_api_secret: str = ""
     exchange_testnet: bool = True
     
-    database_url: str = "sqlite:///tradingbot.db"
+    database_url: str = "sqlite:////dev/shm/tradingbot.db"
+    active_db_path: str = "/dev/shm/tradingbot.db"
+    persistent_db_path: str = "/home/shifu/tredding-agent/tradingbot.db"
+    db_backup_dir: str = "/home/shifu/tredding-agent/backups_db"
+    db_sync_interval_seconds: int = 300
+
+    cloud_sync_enabled: bool = False
+    cloud_sync_provider: str = "turso"
+    cloud_sync_url: str = ""
+    cloud_sync_auth_token: str = ""
+    cloud_sync_interval_seconds: int = 600
+
     environment: str = "development"
     paper_trading: bool = True
     
