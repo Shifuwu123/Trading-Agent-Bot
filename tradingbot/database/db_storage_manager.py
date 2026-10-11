@@ -2,16 +2,13 @@
 tradingbot/database/db_storage_manager.py
 
 Gestor de Almacenamiento Híbrido RAM (tmpfs) y Persistencia en Disco para SQLite.
-
-Arquitectura:
+Blindado con:
 - Capa Caliente (RAM): Operación en tiempo real en `/dev/shm/tradingbot.db`.
-  Elimina el 100% de micro-escrituras aleatorias a la tarjeta MicroSD de la Raspberry Pi,
-  proporcionando latencia inferior a 0.05 ms y protegiendo la memoria Flash NAND contra desgaste.
-- Capa Persistente (Disco): Sincronización atómica periódica (cada 5 minutos) y al apagar
-  hacia `/home/shifu/tredding-agent/tradingbot.db` mediante la API Online Backup de SQLite.
-- Copias de Seguridad (Snapshots): Historial rotativo en `/home/shifu/tredding-agent/backups_db/`.
-- Housekeeping: Purgado automático de micro-decisiones 'HOLD' y velas antiguas para mantener
-  la base de datos compacta y veloz.
+- Capa Persistente (Disco): Sincronización atómica periódica hacia `/home/shifu/tredding-agent/tradingbot.db`.
+- Schema & Data Guard: Prohibición absoluta de sobreescribir disco si la base en RAM carece de tablas o registros críticos.
+- Golden Snapshot Inmutable: Respaldado permanente en `tradingbot_golden_backup.db`.
+- Rotación Segura de Backups: Protección contra purgas accidentales.
+- Migraciones Dinámicas Ligeras: Verificación automática de campos fiscales y reservas.
 """
 
 import os
@@ -25,7 +22,7 @@ import atexit
 import signal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Set
 
 log = logging.getLogger("tradingbot.database.db_storage_manager")
 if not log.handlers:
@@ -43,18 +40,21 @@ class DBStorageManager:
 
     _instance: Optional["DBStorageManager"] = None
     _lock = threading.Lock()
+    REQUIRED_TABLES: Set[str] = {"trades", "digital_wallet", "portfolio"}
 
     def __init__(
         self,
         active_db_path: str = "/dev/shm/tradingbot.db",
         persistent_db_path: str = "/home/shifu/tredding-agent/tradingbot.db",
         backup_dir: str = "/home/shifu/tredding-agent/backups_db",
+        golden_backup_path: str = "/home/shifu/tredding-agent/tradingbot_golden_backup.db",
         sync_interval_seconds: int = 300,
         max_backups: int = 5,
     ):
         self.active_db_path = active_db_path
         self.persistent_db_path = persistent_db_path
         self.backup_dir = backup_dir
+        self.golden_backup_path = golden_backup_path
         self.sync_interval_seconds = sync_interval_seconds
         self.max_backups = max_backups
 
@@ -73,6 +73,7 @@ class DBStorageManager:
         active_db_path: str = "/dev/shm/tradingbot.db",
         persistent_db_path: str = "/home/shifu/tredding-agent/tradingbot.db",
         backup_dir: str = "/home/shifu/tredding-agent/backups_db",
+        golden_backup_path: str = "/home/shifu/tredding-agent/tradingbot_golden_backup.db",
         sync_interval_seconds: int = 300,
     ) -> "DBStorageManager":
         with cls._lock:
@@ -81,16 +82,17 @@ class DBStorageManager:
                     active_db_path=active_db_path,
                     persistent_db_path=persistent_db_path,
                     backup_dir=backup_dir,
+                    golden_backup_path=golden_backup_path,
                     sync_interval_seconds=sync_interval_seconds,
                 )
             return cls._instance
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Inicialización e Integridad
+    # Inicialización, Integridad y Schema Guard
     # ─────────────────────────────────────────────────────────────────────────
 
     def check_db_integrity(self, db_path: str) -> bool:
-        """Verifica la integridad de un archivo SQLite mediante PRAGMA quick_check."""
+        """Verifica la integridad física básica de un archivo SQLite mediante PRAGMA quick_check."""
         if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
             return False
         try:
@@ -104,11 +106,78 @@ class DBStorageManager:
             log.warning(f"[DBStorage] Error comprobando integridad de {db_path}: {e}")
             return False
 
+    def check_db_schema_and_data(self, db_path: str, min_trades: int = 1) -> bool:
+        """
+        Schema Guard: Valida que la base de datos contenga las tablas obligatorias del sistema
+        y que contenga al menos min_trades operaciones registradas.
+        Evita catastróficos falsos positivos de PRAGMA quick_check en bases de datos vacías de 0 o 4KB.
+        """
+        if not self.check_db_integrity(db_path):
+            return False
+        try:
+            conn = sqlite3.connect(db_path, timeout=5.0)
+            cur = conn.cursor()
+            tables = set(r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall())
+            
+            missing_tables = self.REQUIRED_TABLES - tables
+            if missing_tables:
+                log.warning(f"[DBStorage SchemaGuard] Tablas faltantes en {db_path}: {missing_tables}")
+                conn.close()
+                return False
+
+            cur.execute("SELECT count(*) FROM trades;")
+            trade_count = cur.fetchone()[0]
+            conn.close()
+
+            if trade_count < min_trades:
+                log.warning(f"[DBStorage SchemaGuard] {db_path} contiene {trade_count} trades (esperado >= {min_trades}).")
+                return False
+
+            return True
+        except Exception as e:
+            log.warning(f"[DBStorage SchemaGuard] Error validando esquema/datos de {db_path}: {e}")
+            return False
+
+    def _ensure_schema_migrations(self, db_path: str):
+        """Aplica migraciones ligeras no destructivas para campos fiscales, de comisiones y reserva."""
+        if not os.path.exists(db_path):
+            return
+        try:
+            conn = sqlite3.connect(db_path, timeout=5.0)
+            cur = conn.cursor()
+            
+            # 1. Tabla trades
+            trade_cols = set(r[1] for r in cur.execute("PRAGMA table_info(trades);").fetchall())
+            new_trade_cols = [
+                ("fee_usd", "NUMERIC(18, 8) DEFAULT 0.0"),
+                ("pnl_net_usd", "NUMERIC(18, 8) DEFAULT 0.0"),
+                ("clp_exchange_rate", "NUMERIC(18, 8)"),
+                ("pnl_clp", "NUMERIC(18, 8)"),
+            ]
+            for col_name, col_type in new_trade_cols:
+                if col_name not in trade_cols:
+                    log.info(f"[DBStorage Migrations] Añadiendo columna {col_name} a tabla trades en {db_path}")
+                    cur.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type};")
+
+            # 2. Tabla digital_wallet
+            wallet_cols = set(r[1] for r in cur.execute("PRAGMA table_info(digital_wallet);").fetchall())
+            if "reserve_usd" not in wallet_cols:
+                log.info(f"[DBStorage Migrations] Añadiendo columna reserve_usd a tabla digital_wallet en {db_path}")
+                cur.execute("ALTER TABLE digital_wallet ADD COLUMN reserve_usd NUMERIC(18, 8) DEFAULT 0.0;")
+
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            log.warning(f"[DBStorage Migrations] Error aplicando migraciones en {db_path}: {e}")
+
     def ensure_ram_db_initialized(self) -> str:
         """
-        Garantiza que la base de datos en RAM esté disponible y sea consistente.
-        Si no existe en RAM, la copia desde el archivo persistente en disco o backups.
-        Retorna la ruta absoluta activa a utilizar.
+        Garantiza que la base de datos en RAM esté disponible, íntegra y con esquema válido.
+        Orden de resolución jerárquica:
+        1. RAM activa existente (si pasa Schema & Data Guard).
+        2. Almacenamiento persistente en disco (si pasa Schema & Data Guard).
+        3. Golden Backup inmutable (`tradingbot_golden_backup.db`).
+        4. Último backup rotativo verificado.
         """
         ram_dir = os.path.dirname(self.active_db_path)
         if not os.path.exists(ram_dir):
@@ -118,41 +187,77 @@ class DBStorageManager:
                 log.error(f"[DBStorage] No se pudo crear directorio RAM {ram_dir}: {e}. Usando disco directo.")
                 return self.persistent_db_path
 
-        # Si ya existe en RAM y es íntegra, reutilizarla (ej: reinicio rápido del bot)
+        # 1. Verificar si la base en RAM ya es válida y funcional
         if os.path.exists(self.active_db_path) and os.path.getsize(self.active_db_path) > 0:
-            if self.check_db_integrity(self.active_db_path):
-                log.info(f"[DBStorage] Base de datos en RAM ya activa e íntegra en: {self.active_db_path} ({os.path.getsize(self.active_db_path):,} bytes)")
+            if self.check_db_schema_and_data(self.active_db_path):
+                log.info(
+                    f"[DBStorage] Base de datos en RAM ya activa, íntegra y validada en: {self.active_db_path} "
+                    f"({os.path.getsize(self.active_db_path):,} bytes)."
+                )
+                self._ensure_schema_migrations(self.active_db_path)
                 self.register_shutdown_handlers()
                 return self.active_db_path
             else:
-                log.warning(f"[DBStorage] Archivo en RAM corrupto o dañado. Se restaurará desde disco persistente.")
+                log.warning("[DBStorage] Base en RAM dañada, vacía o sin esquema válido. Se purgará para restaurar.")
                 try:
                     os.remove(self.active_db_path)
                 except Exception:
                     pass
 
-        # Copiar desde la base de datos persistente si existe
+        # 2. Copiar desde base de datos persistente si cumple Schema Guard
         if os.path.exists(self.persistent_db_path) and os.path.getsize(self.persistent_db_path) > 0:
-            if self.check_db_integrity(self.persistent_db_path):
-                log.info(f"[DBStorage] Cargando base de datos persistente ({self.persistent_db_path}) hacia RAM ({self.active_db_path})...")
+            if self.check_db_schema_and_data(self.persistent_db_path):
+                log.info(f"[DBStorage] Cargando base de datos persistente ({self.persistent_db_path}) hacia RAM...")
                 self._safe_copy_online(self.persistent_db_path, self.active_db_path)
-                log.info(f"[DBStorage] Base de datos cargada exitosamente en RAM ({os.path.getsize(self.active_db_path):,} bytes).")
+                self._ensure_schema_migrations(self.active_db_path)
+                log.info(f"[DBStorage] Base de datos cargada en RAM ({os.path.getsize(self.active_db_path):,} bytes).")
                 self.register_shutdown_handlers()
                 return self.active_db_path
             else:
-                log.warning(f"[DBStorage] Base de datos en disco {self.persistent_db_path} no supera verificación. Buscando en backups...")
+                log.warning(f"[DBStorage] Base en disco {self.persistent_db_path} no superó el Schema Guard.")
 
-        # Si la persistente no existe o está corrupta, buscar el backup más reciente
-        latest_backup = self._get_latest_valid_backup()
-        if latest_backup:
-            log.info(f"[DBStorage] Restaurando desde backup más reciente: {latest_backup} hacia RAM...")
-            self._safe_copy_online(latest_backup, self.active_db_path)
+        # 3. Restaurar desde Golden Snapshot inmutable
+        if os.path.exists(self.golden_backup_path) and self.check_db_schema_and_data(self.golden_backup_path):
+            log.info(f"[DBStorage] Restaurando desde Golden Snapshot Inmutable: {self.golden_backup_path}...")
+            self._safe_copy_online(self.golden_backup_path, self.active_db_path)
+            self._safe_copy_online(self.golden_backup_path, self.persistent_db_path)
+            self._ensure_schema_migrations(self.active_db_path)
             self.register_shutdown_handlers()
             return self.active_db_path
 
-        log.info(f"[DBStorage] No se encontró base de datos previa. Inicializando nueva en RAM: {self.active_db_path}")
+        # 4. Buscar el backup rotativo más reciente válido
+        latest_backup = self._get_latest_valid_backup()
+        if latest_backup:
+            log.info(f"[DBStorage] Restaurando desde backup rotativo válido: {latest_backup}...")
+            self._safe_copy_online(latest_backup, self.active_db_path)
+            self._safe_copy_online(latest_backup, self.persistent_db_path)
+            self._ensure_schema_migrations(self.active_db_path)
+            self.register_shutdown_handlers()
+            return self.active_db_path
+
+        log.error(f"[DBStorage CRITICAL] Ningún respaldo válido superó el Schema Guard. Inicializando base vacía en {self.active_db_path}")
         self.register_shutdown_handlers()
         return self.active_db_path
+
+    def restore_from_golden_backup(self) -> bool:
+        """Procedimiento explícito de auto-sanación desde el Golden Backup."""
+        if not os.path.exists(self.golden_backup_path):
+            log.error(f"[DBStorage] Golden Backup no existe en {self.golden_backup_path}")
+            return False
+
+        if not self.check_db_schema_and_data(self.golden_backup_path):
+            log.error(f"[DBStorage] Golden Backup corrupto o no supera Schema Guard.")
+            return False
+
+        try:
+            log.info(f"[DBStorage] Auto-sanación: Restaurando RAM y Disco desde Golden Backup...")
+            self._safe_copy_online(self.golden_backup_path, self.active_db_path)
+            self._safe_copy_online(self.golden_backup_path, self.persistent_db_path)
+            self._ensure_schema_migrations(self.active_db_path)
+            return True
+        except Exception as e:
+            log.error(f"[DBStorage] Error en restore_from_golden_backup: {e}")
+            return False
 
     def _safe_copy_online(self, src_path: str, dst_path: str) -> bool:
         """Copia segura entre bases de datos usando sqlite3.Connection.backup."""
@@ -182,26 +287,33 @@ class DBStorageManager:
             reverse=True,
         )
         for b in backups:
-            if self.check_db_integrity(b):
+            if self.check_db_schema_and_data(b):
                 return b
         return None
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Sincronización Atómica RAM -> Disco
+    # Sincronización Atómica RAM -> Disco con Schema Guard
     # ─────────────────────────────────────────────────────────────────────────
 
-    def sync_to_disk(self, create_timestamped_backup: bool = False) -> Dict[str, Any]:
+    def sync_to_disk(self, create_timestamped_backup: bool = False, suppress_logging: bool = False) -> Dict[str, Any]:
         """
         Sincroniza de forma atómica y sin bloquear la base de datos en RAM
-        hacia el almacenamiento persistente en la MicroSD / disco.
+        hacia el almacenamiento persistente en MicroSD / disco.
 
-        Utiliza la API Online Backup de SQLite hacia un archivo temporal y luego
-        realiza un reemplazo atómico con os.replace, garantizando tolerancia absoluta
-        a cortes imprevistos de electricidad o caídas del sistema operativo.
+        Schema Guard Activo:
+        Verifica que la base de datos de origen en RAM contenga las tablas esenciales
+        y datos de trades antes de tocar o sobreescribir el disco.
         """
         start_time = time.time()
         if not os.path.exists(self.active_db_path):
             return {"success": False, "error": f"Base de datos activa en RAM no encontrada en {self.active_db_path}"}
+
+        # SCHEMA GUARD PREVIO: Prohibir sincronizar si la base en RAM está corrupta o vacía
+        if not self.check_db_schema_and_data(self.active_db_path):
+            err_msg = "[DBStorage SchemaGuard] Abortando sincronización a disco: la base activa en RAM no contiene esquema válido ni trades."
+            if not suppress_logging:
+                log.error(err_msg)
+            return {"success": False, "error": err_msg}
 
         temp_disk_path = f"{self.persistent_db_path}.tmp_sync"
         try:
@@ -213,11 +325,11 @@ class DBStorageManager:
             dst_conn.close()
             src_conn.close()
 
-            # 2. Verificar integridad del archivo temporal recién escrito
-            if not self.check_db_integrity(temp_disk_path):
+            # 2. SCHEMA GUARD POSTERIOR: Verificar que el archivo sincronizado sea idéntico en integridad y esquema
+            if not self.check_db_schema_and_data(temp_disk_path):
                 if os.path.exists(temp_disk_path):
                     os.remove(temp_disk_path)
-                return {"success": False, "error": "Verificación de integridad falló en el archivo temporal sincronizado"}
+                return {"success": False, "error": "Schema Guard falló en el archivo temporal sincronizado"}
 
             # 3. Reemplazo atómico (atomic swap) hacia el archivo persistente
             os.replace(temp_disk_path, self.persistent_db_path)
@@ -226,17 +338,21 @@ class DBStorageManager:
             duration_ms = (time.time() - start_time) * 1000.0
             self._last_sync_time = datetime.now(timezone.utc)
 
-            # 4. Generación de snapshot rotativo si fue solicitado
+            # 4. Generación de snapshot rotativo seguro si fue solicitado
             if create_timestamped_backup:
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 backup_target = os.path.join(self.backup_dir, f"tradingbot.db.bak_{ts}")
                 shutil.copy2(self.persistent_db_path, backup_target)
                 self._rotate_backups()
 
-            log.info(
-                f"[DBStorage] Sincronización RAM -> Disco completada en {duration_ms:.1f}ms "
-                f"({file_size:,} bytes). Desgaste en SD contenido exitosamente."
-            )
+            if not suppress_logging:
+                try:
+                    log.info(
+                        f"[DBStorage] Sincronización RAM -> Disco blindada completada en {duration_ms:.1f}ms "
+                        f"({file_size:,} bytes). MicroSD protegida exitosamente."
+                    )
+                except Exception:
+                    pass
             return {
                 "success": True,
                 "synced_at": self._last_sync_time.isoformat(),
@@ -253,7 +369,7 @@ class DBStorageManager:
             return {"success": False, "error": str(e)}
 
     def _rotate_backups(self):
-        """Mantiene solo los max_backups más recientes en backup_dir."""
+        """Mantiene solo los max_backups más recientes en backup_dir, preservando copias válidas."""
         try:
             backups = sorted(
                 [os.path.join(self.backup_dir, f) for f in os.listdir(self.backup_dir) if f.startswith("tradingbot.db.bak_")],
@@ -263,8 +379,11 @@ class DBStorageManager:
             if len(backups) > self.max_backups:
                 for old in backups[self.max_backups:]:
                     try:
+                        # Nunca borrar el Golden Backup si estuviera en este directorio
+                        if "golden" in os.path.basename(old):
+                            continue
                         os.remove(old)
-                        log.debug(f"[DBStorage] Backup antiguo rotado y eliminado: {old}")
+                        log.debug(f"[DBStorage] Backup rotado: {old}")
                     except Exception:
                         pass
         except Exception as e:
@@ -281,8 +400,7 @@ class DBStorageManager:
         retention_days_logs: int = 14,
     ) -> Dict[str, Any]:
         """
-        Purga registros redundantes antiguos de micro-decisiones 'HOLD' y velas
-        para evitar que la base de datos en RAM crezca de forma indefinida.
+        Purga registros redundantes de micro-decisiones 'HOLD' y velas antiguas.
         Preserva de manera estricta todos los trades, balances, portfolio y logs críticos.
         """
         if not os.path.exists(self.active_db_path):
@@ -297,11 +415,11 @@ class DBStorageManager:
             conn = sqlite3.connect(self.active_db_path, timeout=10.0)
             cur = conn.cursor()
 
-            # 1. Eliminar decisiones 'HOLD' antiguas (alta frecuencia y nulo valor histórico)
+            # 1. Eliminar decisiones 'HOLD' antiguas
             cur.execute("DELETE FROM decision_logs WHERE decision = 'HOLD' AND timestamp < ?", (cutoff_hold,))
             deleted_hold = cur.rowcount
 
-            # 2. Eliminar otros logs no críticos con más de 14 días
+            # 2. Eliminar logs no críticos con más de 14 días
             cur.execute(
                 "DELETE FROM decision_logs WHERE decision NOT IN ('BUY', 'BUY_DCA_1', 'BUY_DCA_2', 'CLOSED') AND timestamp < ?",
                 (cutoff_logs,),
@@ -324,7 +442,7 @@ class DBStorageManager:
 
             log.info(
                 f"[DBStorage Housekeeping] Purgado completado: {deleted_hold:,} HOLDs, "
-                f"{deleted_other_logs:,} logs antiguos, {deleted_candles:,} velas eliminadas."
+                f"{deleted_other_logs:,} logs, {deleted_candles:,} velas."
             )
             return {
                 "success": True,
@@ -364,17 +482,13 @@ class DBStorageManager:
         """Ciclo continuo del trabajador de sincronización en segundo plano."""
         iteration_count = 0
         while not self._stop_event.is_set():
-            # Esperar el intervalo indicado permitiendo cancelación inmediata
             if self._stop_event.wait(timeout=self.sync_interval_seconds):
                 break
 
             try:
-                # Sincronización atómica periódica a disco
-                # Cada 6 ciclos (~30 min con intervalo 300s) genera un snapshot rotativo
                 save_backup = (iteration_count % 6 == 0)
                 self.sync_to_disk(create_timestamped_backup=save_backup)
 
-                # Cada 12 ciclos (~60 min) ejecuta housekeeping preventivo
                 if iteration_count % 12 == 0:
                     self.run_housekeeping()
 
@@ -426,6 +540,6 @@ class DBStorageManager:
             pass
         finally:
             try:
-                self.sync_to_disk(create_timestamped_backup=False)
+                self.sync_to_disk(create_timestamped_backup=False, suppress_logging=True)
             except Exception:
                 pass

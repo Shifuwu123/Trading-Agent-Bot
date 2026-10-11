@@ -245,6 +245,17 @@ class TradeEngine:
                                 log.warning(f"[{agent_id}] Compra en {symbol} bloqueada por BTC Market Bias: {bias_reason}")
                                 return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"BTC Macro Bias Bearish ({bias_reason})"}
 
+                    # Filtro Cuantitativo de Régimen de Mercado (Choppiness Index & ADX)
+                    regime_cfg = getattr(self.config.risk, "regime_filter", None)
+                    if regime_cfg and getattr(regime_cfg, "enabled", False):
+                        from tradingbot.strategies.regime_filter import MarketRegimeFilter
+                        chop_max = getattr(regime_cfg, "chop_max", 61.8)
+                        adx_min = getattr(regime_cfg, "adx_min", 22.0)
+                        is_tradeable, regime_reason, metrics = MarketRegimeFilter.evaluate_regime(df, chop_max=chop_max, adx_min=adx_min)
+                        if not is_tradeable:
+                            log.warning(f"[{agent_id}] Compra en {symbol} bloqueada por Filtro de Régimen: {regime_reason}")
+                            return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Filtro de Régimen: {regime_reason}"}
+
                     # Validar límite de posiciones abiertas concurrentes
                     if not self.risk_manager.can_open_position(current_positions):
                         return {'symbol': symbol, 'decision': 'BLOCKED', 'reason': f"Límite de posiciones abiertas alcanzado ({current_positions}/{self.config.risk.max_open_positions})"}
@@ -331,10 +342,16 @@ class TradeEngine:
                 if pnl_pct <= -hard_sl_pct:
                     should_close, close_reason = True, f"Hard Stop Loss Emergencia (-{hard_sl_pct*100:.1f}%)"
                 
-                # 2. Take Profit Estándar
+                # 2. Take Profit Estándar (Elevado institucional >= +1.50% para superar comisiones)
                 current_tp_pct = tp_pct
                 if trading_mode == "scalper":
-                    current_tp_pct = 0.005 # +0.5%
+                    scalper_tp = getattr(self.config.risk, "scalper_take_profit_pct", None)
+                    if scalper_tp is not None:
+                        current_tp_pct = float(scalper_tp)
+                    elif tp_pct and tp_pct >= 0.012:
+                        current_tp_pct = tp_pct
+                    else:
+                        current_tp_pct = 0.015 # +1.50% institucional
                     
                 if not should_close and current_price >= price_entry * (1 + current_tp_pct):
                     should_close, close_reason = True, f"Take Profit (+{current_tp_pct*100:.1f}%)"
@@ -384,11 +401,25 @@ class TradeEngine:
                 
                 pnl_usd = float(closed_trade.pnl) if closed_trade else 0.0
                 pnl_pct = float(closed_trade.pnl_pct) if closed_trade else 0.0
+                fee_usd = float(closed_trade.fee_usd or 0.0) if closed_trade else 0.0
+                pnl_net_usd = float(closed_trade.pnl_net_usd or 0.0) if closed_trade else 0.0
+                pnl_clp = float(closed_trade.pnl_clp or 0.0) if closed_trade else 0.0
                 capital_clp = self.clp_converter.convert_usd_to_clp(total_capital)
                 
-                trade_details = {"symbol": symbol, "side": execution_side, "amount": float(trade.quantity), "price": executed_price, "pnl_usd": pnl_usd, "pnl_pct": pnl_pct, "reason": close_reason}
+                trade_details = {
+                    "symbol": symbol,
+                    "side": execution_side,
+                    "amount": float(trade.quantity),
+                    "price": executed_price,
+                    "pnl_usd": pnl_usd,
+                    "pnl_pct": pnl_pct,
+                    "fee_usd": fee_usd,
+                    "pnl_net_usd": pnl_net_usd,
+                    "pnl_clp": pnl_clp,
+                    "reason": close_reason
+                }
                 self.notifier.send_trade_alert(trade_details, capital_clp)
-                registrar_log("REPORTE", f"Operación CERRADA: {execution_side} de {trade.quantity} {symbol} a {executed_price} USD. PnL: {pnl_usd:.2f}. Razón: {close_reason}")
+                registrar_log("REPORTE", f"Operación CERRADA: {execution_side} de {trade.quantity} {symbol} a {executed_price} USD. PnL Bruto: {pnl_usd:.2f}, Fee: {fee_usd:.4f}, PnL Neto: {pnl_net_usd:.2f} USD ({pnl_clp:,.0f} CLP). Razón: {close_reason}")
                 
                 # Verificación de agotamiento de fondo tras el cierre
                 try:

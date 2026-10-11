@@ -104,6 +104,15 @@ risk:
     threshold_usd: 15.00
     harvest_ratio: 1.00
 
+  # Take Profit Institucional para Scalper (Supera comisiones de exchange)
+  scalper_take_profit_pct: 0.015
+
+  # Filtro Cuantitativo de Régimen de Mercado (Choppiness Index & ADX)
+  regime_filter:
+    enabled: true
+    chop_max: 61.8
+    adx_min: 22.0
+
 strategies:
   # Nombre de la estrategia principal que utilizará el bot para generar las señales de BUY/SELL.
   active: "ema_crossover"

@@ -93,7 +93,10 @@ def test_sync_to_disk_atomic(temp_dbs):
 
     # Escribir un nuevo trade en RAM
     conn = sqlite3.connect(ram_path)
-    conn.execute("INSERT INTO trades VALUES (2, 't-2', 'DOGE/USDT', 'BUY', 10.0, 0.1, 0.12, 0.2, 20.0, 'CLOSED', '2026-10-10 01:00:00', '2026-10-10 01:05:00', 'scalper_t1');")
+    conn.execute("""
+        INSERT INTO trades (id, trade_id, symbol, side, quantity, price_entry, price_exit, pnl, pnl_pct, status, opened_at, closed_at, agent_id)
+        VALUES (2, 't-2', 'DOGE/USDT', 'BUY', 10.0, 0.1, 0.12, 0.2, 20.0, 'CLOSED', '2026-10-10 01:00:00', '2026-10-10 01:05:00', 'scalper_t1');
+    """)
     conn.commit()
     conn.close()
 

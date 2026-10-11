@@ -205,6 +205,13 @@ class OrchestratorBot:
         self._started_at = datetime.utcnow()
         log.info("[Orchestrator] === INICIANDO SISTEMA MULTI-AGENTE ===")
 
+        # Verificar salud del almacenamiento antes del arranque
+        from tradingbot.database.storage_watchdog import StorageHealthWatchdog
+        healthy, detail = StorageHealthWatchdog.check_health()
+        if not healthy:
+            log.warning(f"[Orchestrator] StorageWatchdog: anomalía detectada ({detail}). Ejecutando auto-sanación inicial...")
+            StorageHealthWatchdog.auto_heal(self.notifier)
+
         # Obtener capital y distribuir
         total_capital = asyncio.run(self._fetch_total_capital())
         is_spec_active = self._is_speculative_active()

@@ -120,6 +120,7 @@ async def test_individual_coin_reserve_order_size():
     from tradingbot.database.models import Trade
 
     config = load_yaml_config("config.yaml")
+    config.risk.max_open_positions = 50
     config.risk.coin_reserve_pct = 0.25
     config.risk.max_coin_order_pct = 0.75
     config.risk.min_order_usd = 0.10
@@ -135,6 +136,7 @@ async def test_individual_coin_reserve_order_size():
     clp_converter.convert_usd_to_clp.return_value = 50000
 
     config.risk.micro_dca.enabled = False
+    config.risk.regime_filter.enabled = False
     te = TradeEngine(config, rm, pm, strategy, notifier, clp_converter)
 
     mock_collector = MagicMock()
@@ -142,9 +144,10 @@ async def test_individual_coin_reserve_order_size():
     mock_collector.get_historical_data = AsyncMock(return_value=mock_df)
 
     mock_executor = MagicMock()
+    test_sym = "COIN_RESERVE_TEST/USDT"
     mock_executor.execute_order = AsyncMock(return_value={
         "order_id": "test_ord_001",
-        "symbol": "SOL/USDT",
+        "symbol": test_sym,
         "side": "BUY",
         "amount": 0.075,
         "price": 10.0,
@@ -155,7 +158,7 @@ async def test_individual_coin_reserve_order_size():
 
     try:
         # With $1.00 USD base and 0 PnL, max order is 0.75 USD. At price $10, amount = 0.075 units.
-        result = await te.process_symbol("SOL/USDT", "1m", 16.0, mock_collector, mock_executor, agent_id="scalper_t1")
+        result = await te.process_symbol(test_sym, "1m", 16.0, mock_collector, mock_executor, agent_id="scalper_t1")
 
         assert result['decision'] == "BUY"
         mock_executor.execute_order.assert_called_once()

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from tradingbot.database.models import Trade, Portfolio, DigitalWallet, Candle, DecisionLog, CashFlow, Base
 from tradingbot.core.config import get_settings
 from tradingbot.utils.logger import log
+from tradingbot.utils.clp_converter import CLPConverter
 
 
 class DatabaseSession:
@@ -22,6 +23,19 @@ class DatabaseSession:
     _SessionLocal = None
     _async_engine = None
     _AsyncSessionLocal = None
+
+    @classmethod
+    def reset_engine(cls):
+        """Descarta y resetea las conexiones activas para permitir reconexión limpia tras auto-sanación."""
+        if cls._engine:
+            try:
+                cls._engine.dispose()
+            except Exception:
+                pass
+        cls._engine = None
+        cls._SessionLocal = None
+        cls._async_engine = None
+        cls._AsyncSessionLocal = None
 
     @classmethod
     def initialize(cls):
@@ -70,16 +84,20 @@ class DatabaseSession:
             # Migraciones ligeras automáticas para tablas existentes en SQLite
             if is_sqlite:
                 with cls._engine.connect() as conn:
-                    try:
-                        conn.execute(text("ALTER TABLE trades ADD COLUMN dca_step INTEGER DEFAULT 1"))
-                        conn.commit()
-                    except Exception:
-                        pass
-                    try:
-                        conn.execute(text("ALTER TABLE trades ADD COLUMN exit_reason TEXT"))
-                        conn.commit()
-                    except Exception:
-                        pass
+                    for col_sql in [
+                        "ALTER TABLE trades ADD COLUMN dca_step INTEGER DEFAULT 1",
+                        "ALTER TABLE trades ADD COLUMN exit_reason TEXT",
+                        "ALTER TABLE trades ADD COLUMN fee_usd NUMERIC(18, 8) DEFAULT 0.0",
+                        "ALTER TABLE trades ADD COLUMN pnl_net_usd NUMERIC(18, 8) DEFAULT 0.0",
+                        "ALTER TABLE trades ADD COLUMN clp_exchange_rate NUMERIC(18, 8)",
+                        "ALTER TABLE trades ADD COLUMN pnl_clp NUMERIC(18, 8)",
+                        "ALTER TABLE digital_wallet ADD COLUMN reserve_usd NUMERIC(18, 8) DEFAULT 0.0",
+                    ]:
+                        try:
+                            conn.execute(text(col_sql))
+                            conn.commit()
+                        except Exception:
+                            pass
             cls._SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=cls._engine)
 
             # Motor asíncrono para operaciones no bloqueantes
@@ -124,6 +142,7 @@ class PortfolioManager:
     def __init__(self):
         DatabaseSession.initialize()
         self.settings = get_settings()
+        self.clp_converter = CLPConverter()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Sincrónicos (Compatibilidad hacia atrás)
@@ -194,6 +213,21 @@ class PortfolioManager:
                 trade.pnl = (trade.price_entry - price_exit_dec) * trade.quantity
                 trade.pnl_pct = (trade.price_entry - price_exit_dec) / trade.price_entry if trade.price_entry > 0 else 0
 
+            # Modelado contable de comisiones (0.10% Binance Spot por tramo = 0.20% viaje completo)
+            fee_rate = Decimal("0.0010")
+            entry_val = trade.price_entry * trade.quantity
+            exit_val = price_exit_dec * trade.quantity
+            trade.fee_usd = (entry_val + exit_val) * fee_rate
+            trade.pnl_net_usd = (trade.pnl or Decimal("0.0")) - trade.fee_usd
+
+            # Tasa Dólar Observado y conversión fiscal a CLP (Normativa SII Circular N° 43)
+            try:
+                clp_rate_val = self.clp_converter.get_usd_to_clp_rate()
+                trade.clp_exchange_rate = Decimal(str(clp_rate_val))
+            except Exception:
+                trade.clp_exchange_rate = Decimal("950.0")
+            trade.pnl_clp = trade.pnl_net_usd * trade.clp_exchange_rate
+
             self._update_portfolio_entry(
                 session,
                 execution_data["symbol"],
@@ -207,9 +241,24 @@ class PortfolioManager:
             if execution_data["is_paper"]:
                 self._update_virtual_wallet(session, execution_data["side"], execution_data["amount"], execution_data["price"])
 
+            # Barrido de Beneficios (20% Profit Sweep) hacia Reserva Blindada
+            if trade.pnl_net_usd and trade.pnl_net_usd > Decimal("0.0"):
+                sweep_amount = trade.pnl_net_usd * Decimal("0.20")
+                wallet = session.query(DigitalWallet).filter(DigitalWallet.is_paper == execution_data["is_paper"]).first()
+                if wallet:
+                    wallet.reserve_usd = (wallet.reserve_usd or Decimal("0.0")) + sweep_amount
+                    session.add(CashFlow(
+                        telegram_id=wallet.telegram_id,
+                        type="PROFIT_RESERVE",
+                        amount_usd=sweep_amount,
+                        description=f"20% Profit Sweep trade {trade.trade_id}",
+                        is_paper=execution_data["is_paper"]
+                    ))
+                    log.info(f"[ProfitSweep] ${sweep_amount:.4f} USD (20%) transferido a subcuenta de reserva.")
+
             session.commit()
             session.refresh(trade)
-            log.info(f"Recorded close trade {trade.trade_id}. PnL: {trade.pnl}")
+            log.info(f"Recorded close trade {trade.trade_id}. PnL Bruto: {trade.pnl}, Fee: {trade.fee_usd}, PnL Neto: {trade.pnl_net_usd}")
             return trade
         except Exception as e:
             session.rollback()
@@ -562,6 +611,21 @@ class PortfolioManager:
                     trade.pnl = (trade.price_entry - price_exit_dec) * trade.quantity
                     trade.pnl_pct = (trade.price_entry - price_exit_dec) / trade.price_entry if trade.price_entry > 0 else 0
 
+                # Modelado contable de comisiones (0.10% Binance Spot por tramo = 0.20% viaje completo)
+                fee_rate = Decimal("0.0010")
+                entry_val = trade.price_entry * trade.quantity
+                exit_val = price_exit_dec * trade.quantity
+                trade.fee_usd = (entry_val + exit_val) * fee_rate
+                trade.pnl_net_usd = (trade.pnl or Decimal("0.0")) - trade.fee_usd
+
+                # Tasa Dólar Observado y conversión fiscal a CLP (Normativa SII Circular N° 43)
+                try:
+                    clp_rate_val = self.clp_converter.get_usd_to_clp_rate()
+                    trade.clp_exchange_rate = Decimal(str(clp_rate_val))
+                except Exception:
+                    trade.clp_exchange_rate = Decimal("950.0")
+                trade.pnl_clp = trade.pnl_net_usd * trade.clp_exchange_rate
+
                 await self._update_portfolio_entry_async(
                     session,
                     execution_data["symbol"],
@@ -575,8 +639,26 @@ class PortfolioManager:
                 if execution_data["is_paper"]:
                     await self._update_virtual_wallet_async(session, execution_data["side"], execution_data["amount"], execution_data["price"])
 
+                # Barrido de Beneficios (20% Profit Sweep) hacia Reserva Blindada
+                if trade.pnl_net_usd and trade.pnl_net_usd > Decimal("0.0"):
+                    sweep_amount = trade.pnl_net_usd * Decimal("0.20")
+                    wallet_res = await session.execute(
+                        select(DigitalWallet).filter(DigitalWallet.is_paper == execution_data["is_paper"])
+                    )
+                    wallet = wallet_res.scalars().first()
+                    if wallet:
+                        wallet.reserve_usd = (wallet.reserve_usd or Decimal("0.0")) + sweep_amount
+                        session.add(CashFlow(
+                            telegram_id=wallet.telegram_id,
+                            type="PROFIT_RESERVE",
+                            amount_usd=sweep_amount,
+                            description=f"20% Profit Sweep trade {trade.trade_id}",
+                            is_paper=execution_data["is_paper"]
+                        ))
+                        log.info(f"[AsyncDB ProfitSweep] ${sweep_amount:.4f} USD (20%) transferido a subcuenta de reserva.")
+
                 await session.commit()
-                log.info(f"[AsyncDB] Recorded close trade {trade.trade_id}. PnL: {trade.pnl}, Reason: {trade.exit_reason}")
+                log.info(f"[AsyncDB] Recorded close trade {trade.trade_id}. PnL Bruto: {trade.pnl}, Fee: {trade.fee_usd}, PnL Neto: {trade.pnl_net_usd}, Reason: {trade.exit_reason}")
                 return trade
             except Exception as e:
                 await session.rollback()

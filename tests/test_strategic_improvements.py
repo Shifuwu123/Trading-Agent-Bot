@@ -232,6 +232,8 @@ async def test_micro_dca_entry_and_pullback_consolidation(mock_config, mock_noti
     strategy_mock.slow_period = 21
     strategy_mock.name = "EMACrossover"
 
+    mock_config.risk.regime_filter.enabled = False
+
     trade_engine = TradeEngine(
         config=mock_config,
         risk_manager=risk_manager,

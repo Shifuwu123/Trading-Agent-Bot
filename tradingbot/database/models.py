@@ -29,6 +29,10 @@ class Trade(Base):
     agent_id = Column(String, default="legacy", nullable=True)
     dca_step = Column(Integer, default=1, nullable=True)
     exit_reason = Column(String, nullable=True)
+    fee_usd = Column(Numeric(18, 8), default=0.0, nullable=True)
+    pnl_net_usd = Column(Numeric(18, 8), default=0.0, nullable=True)
+    clp_exchange_rate = Column(Numeric(18, 8), nullable=True)
+    pnl_clp = Column(Numeric(18, 8), nullable=True)
 
 class Portfolio(Base):
     __tablename__ = 'portfolio'
@@ -51,6 +55,7 @@ class DigitalWallet(Base):
     id = Column(Integer, primary_key=True)
     telegram_id = Column(String, index=True)
     balance_usd = Column(Numeric(18, 8), default=50.0)
+    reserve_usd = Column(Numeric(18, 8), default=0.0, nullable=True)
     is_paper = Column(Boolean, default=True)
     
     __table_args__ = (UniqueConstraint('telegram_id', 'is_paper', name='_telegram_paper_uc'),)

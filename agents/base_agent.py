@@ -138,6 +138,17 @@ class BaseAgent(ABC):
             log.info(f"[{self.agent_name}] En modo PASSIVE. Ciclo omitido.")
             return
 
+        # Watchdog de Salud de Almacenamiento Pre-Ciclo
+        from tradingbot.database.storage_watchdog import StorageHealthWatchdog
+        healthy, detail = StorageHealthWatchdog.check_health()
+        if not healthy:
+            log.warning(f"[{self.agent_name}] StorageWatchdog detectó anomalía: {detail}. Intentando auto-sanación...")
+            healed = StorageHealthWatchdog.auto_heal(self.notifier)
+            if not healed:
+                log.critical(f"[{self.agent_name}] Auto-sanación fallida. Activando Safe Pause preventivo.")
+                self.paused = True
+                return
+
         log.info(f"[{self.agent_name}] --- Iniciando ciclo #{self._cycle_count + 1} ---")
         connector = CCXTConnector()
         data_collector = DataCollector(connector)

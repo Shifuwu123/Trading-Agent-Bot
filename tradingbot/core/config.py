@@ -53,6 +53,11 @@ class MicroDCAConfig(BaseModel):
     pullback_min_pct: float = 0.006        # Retroceso mínimo -0.6% para gatillar Tramo 2
     pullback_max_pct: float = 0.025        # Retroceso máximo -2.5% para Tramo 2
 
+class RegimeFilterConfig(BaseModel):
+    enabled: bool = False                  # Desactivado por defecto para compatibilidad con fixtures sintéticos
+    chop_max: float = 61.8
+    adx_min: float = 22.0
+
 class RiskConfig(BaseModel):
     max_open_positions: int = 20
     max_capital_exposure_pct: float = 0.30
@@ -63,6 +68,7 @@ class RiskConfig(BaseModel):
     daily_loss_limit_pct: float = 0.05
     max_drawdown_pct: float = 0.20
     default_take_profit_pct: float = 0.04
+    scalper_take_profit_pct: float = 0.015
     trailing_stop: bool = True
     trailing_stop_positive: float = 0.02
     min_order_usd: float = 0.10
@@ -70,6 +76,7 @@ class RiskConfig(BaseModel):
     market_bias: MarketBiasConfig = Field(default_factory=MarketBiasConfig)
     profit_harvest: ProfitHarvestConfig = Field(default_factory=ProfitHarvestConfig)
     micro_dca: MicroDCAConfig = Field(default_factory=MicroDCAConfig)
+    regime_filter: RegimeFilterConfig = Field(default_factory=RegimeFilterConfig)
 
 class AgentMetadataConfig(BaseModel):
     name: str = "UnnamedAgent"
