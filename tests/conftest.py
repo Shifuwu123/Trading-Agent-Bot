@@ -24,9 +24,16 @@ def setup_isolated_test_database():
     sync_url = f"sqlite:///{temp_db_path}"
     async_url = f"sqlite+aiosqlite:///{temp_db_path}"
 
-    # Sobrescribir database_url en settings
+    # Sobrescribir database_url y rutas en settings y variables de entorno del proceso
+    os.environ["DATABASE_URL"] = sync_url
+    os.environ["ACTIVE_DB_PATH"] = temp_db_path
+    os.environ["PERSISTENT_DB_PATH"] = temp_db_path
+    os.environ["DATABASE_PATH"] = temp_db_path
+
     settings = get_settings()
     settings.database_url = sync_url
+    settings.active_db_path = temp_db_path
+    settings.persistent_db_path = temp_db_path
 
     # Resetear instancias previas de DatabaseSession
     DatabaseSession._engine = None
@@ -50,18 +57,11 @@ def setup_isolated_test_database():
 
     Base.metadata.create_all(bind=sync_engine)
 
-    # Migraciones ligeras
+    # Migraciones oficiales versionadas
+    from tradingbot.database.migrations.manager import MigrationManager
+    MigrationManager(db_path=temp_db_path).apply_all()
+
     with sync_engine.connect() as conn:
-        try:
-            conn.execute(text("ALTER TABLE trades ADD COLUMN dca_step INTEGER DEFAULT 1"))
-            conn.commit()
-        except Exception:
-            pass
-        try:
-            conn.execute(text("ALTER TABLE trades ADD COLUMN exit_reason TEXT"))
-            conn.commit()
-        except Exception:
-            pass
 
         # Seed initial wallet
         conn.execute(text("INSERT OR REPLACE INTO digital_wallet (id, telegram_id, balance_usd, is_paper) VALUES (1, '1676283475', 16.0, 1)"))

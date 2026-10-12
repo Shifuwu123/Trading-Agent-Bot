@@ -40,9 +40,10 @@ class BaseAgent(ABC):
         self.config: AppConfig = load_yaml_config(config_path)
         self.settings = get_settings()
 
-        self.agent_id: str = getattr(self.config, "agent", None) and self.config.agent.agent_id or "unknown"
-        self.agent_name: str = getattr(self.config, "agent", None) and self.config.agent.name or "UnnamedAgent"
-        self.capital_pool_pct: float = getattr(self.config, "agent", None) and self.config.agent.capital_pool_pct or 0.0
+        agent_meta = getattr(self.config, "agent", None)
+        self.agent_id: str = agent_meta.agent_id if agent_meta else "unknown"
+        self.agent_name: str = agent_meta.name if agent_meta else "UnnamedAgent"
+        self.capital_pool_pct: float = agent_meta.capital_pool_pct if agent_meta else 0.0
 
         self.risk_manager = RiskManager(self.config)
         self.portfolio_manager = PortfolioManager()

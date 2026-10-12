@@ -19,7 +19,7 @@ class RiskManager:
                 f"reached limit ({self.risk_config.max_open_positions})."
             )
             return False
-        
+
         log.info(
             f"Can open position: {current_open_positions} open positions, "
             f"limit is {self.risk_config.max_open_positions}."
@@ -33,7 +33,7 @@ class RiskManager:
         if total_capital <= 0:
             log.error("Total capital must be greater than zero to check exposure.")
             return False
-            
+
         exposure_pct = current_exposure / total_capital
         if exposure_pct >= self.risk_config.max_capital_exposure_pct:
             log.warning(
@@ -41,7 +41,7 @@ class RiskManager:
                 f"limit of {self.risk_config.max_capital_exposure_pct:.2%}."
             )
             return False
-            
+
         log.info(
             f"Capital exposure is safe: {exposure_pct:.2%} "
             f"(limit {self.risk_config.max_capital_exposure_pct:.2%})."
@@ -65,7 +65,7 @@ class RiskManager:
                 f"{self.risk_config.daily_loss_limit_pct:.2%}."
             )
             return False
-            
+
         log.info(
             f"Daily loss is within limits: {loss_pct:.2%} "
             f"(limit {self.risk_config.daily_loss_limit_pct:.2%})."
@@ -87,9 +87,9 @@ class RiskManager:
 
         risk_amount = total_capital * self.risk_config.max_loss_per_trade_pct
         price_risk_per_unit = abs(entry_price - stop_loss_price)
-        
+
         position_size = risk_amount / price_risk_per_unit
-        
+
         # Check against slot budget and total capital exposure
         usable_exposure_pct = self.risk_config.max_capital_exposure_pct
         if not is_dca:
@@ -100,7 +100,7 @@ class RiskManager:
         min_order = getattr(self.risk_config, "min_order_usd", 1.0)
         max_investment = min(total_capital * self.risk_config.max_capital_exposure_pct, max(slot_budget, min_order))
         investment_size = position_size * entry_price
-        
+
         if investment_size > max_investment:
             position_size = max_investment / entry_price
             log.info(

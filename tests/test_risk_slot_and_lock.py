@@ -26,6 +26,14 @@ def test_risk_manager_slot_allocation():
     assert size > 0
     assert size * current_price <= 3.51  # Within floating precision of $3.50
 
+def test_risk_manager_can_open_position_limits():
+    config = load_yaml_config("config.yaml")
+    config.risk.max_open_positions = 5
+    rm = RiskManager(config)
+    assert rm.can_open_position(4) is True
+    assert rm.can_open_position(5) is False
+    assert rm.can_open_position(6) is False
+
 @pytest.mark.asyncio
 async def test_wallet_non_negative_clamp():
     pm = PortfolioManager()

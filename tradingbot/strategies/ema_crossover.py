@@ -21,7 +21,7 @@ class EMACrossoverStrategy(BaseStrategy):
         if df is None or df.empty:
             log.warning("Empty or None DataFrame passed to generate_signal.")
             return "HOLD"
-            
+
         if len(df) < self.slow_period + 1:
             log.warning(f"Not enough data to calculate EMAs for {self.slow_period} periods. Need at least {self.slow_period + 1} rows.")
             return "HOLD"

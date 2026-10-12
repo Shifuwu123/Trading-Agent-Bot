@@ -19,7 +19,7 @@ class TelegramNotifier:
         import os
         self.bot_token = getattr(settings, 'telegram_bot_token', os.getenv('TELEGRAM_BOT_TOKEN', ''))
         self.chat_id = getattr(settings, 'telegram_chat_id', os.getenv('TELEGRAM_CHAT_ID', ''))
-        
+
         if not self.bot_token or not self.chat_id:
             log.warning("Telegram bot token or chat ID is missing. Notifications will not be sent.")
 
@@ -79,17 +79,17 @@ class TelegramNotifier:
         side = trade_details.get("side", "UNKNOWN")
         amount = trade_details.get("amount", 0)
         price = trade_details.get("price", 0)
-        
+
         base_coin = symbol.split('/')[0] if '/' in symbol else ""
         quote_coin = symbol.split('/')[1] if '/' in symbol else "USDT"
-        
+
         if "reason" in trade_details:
             msg = f"🔔 <b>Trade Closed ({html.escape(str(trade_details['reason']))})</b> 🔔\n\n"
             msg += f"<b>Symbol:</b> {html.escape(symbol)}\n"
             msg += f"<b>Side:</b> {html.escape(side)}\n"
             msg += f"<b>Amount:</b> {amount} {html.escape(base_coin)}\n"
             msg += f"<b>Price:</b> {price} {html.escape(quote_coin)}\n"
-            
+
             pnl_usd = trade_details.get("pnl_usd", 0.0)
             pnl_pct = trade_details.get("pnl_pct", 0.0)
             fee_usd = trade_details.get("fee_usd")
@@ -105,15 +105,15 @@ class TelegramNotifier:
             if pnl_clp is not None:
                 msg += f"<b>PnL Neto CLP:</b> ${pnl_clp:,.0f} CLP\n"
         else:
-            msg = f"🚨 <b>Trade Executed</b> 🚨\n\n"
+            msg = "🚨 <b>Trade Executed</b> 🚨\n\n"
             msg += f"<b>Symbol:</b> {html.escape(symbol)}\n"
             msg += f"<b>Side:</b> {html.escape(side)}\n"
             msg += f"<b>Amount:</b> {amount} {html.escape(base_coin)}\n"
             msg += f"<b>Price:</b> {price} {html.escape(quote_coin)}\n"
-        
+
         if capital_clp is not None:
             msg += f"\n<b>Estimated Capital:</b> ${capital_clp:,.0f} CLP"
-            
+
         self.send_message(msg, parse_mode="HTML")
 
     def send_error_alert(self, error_msg: Any):

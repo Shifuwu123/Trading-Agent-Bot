@@ -5,7 +5,7 @@ class ExchangeConnector(ABC):
     """
     Abstract base class defining the interface for market exchange connectors.
     """
-    
+
     @abstractmethod
     async def fetch_balance(self) -> Dict[str, Any]:
         """Fetch the account balance."""
@@ -34,7 +34,7 @@ class ExchangeConnector(ABC):
     async def cancel_order(self, id: str, symbol: str) -> Dict[str, Any]:
         """Cancel an existing trade order."""
         pass
-        
+
     @abstractmethod
     async def close(self):
         """Cleanly close the connector session."""

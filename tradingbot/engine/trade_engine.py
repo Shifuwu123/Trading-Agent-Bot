@@ -2,7 +2,7 @@ import os
 import asyncio
 import traceback
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 import ccxt
 from sqlalchemy import select, func
 from tradingbot.core.config import AppConfig
@@ -31,11 +31,11 @@ class TradeEngine:
         self.clp_converter = clp_converter
         self._trade_lock: Optional[asyncio.Lock] = None
         self._trade_lock_loop: Optional[asyncio.AbstractEventLoop] = None
-        
+
         # Filtro Macro de Tendencia BTC
         bias_cfg = getattr(self.config.risk, "market_bias", None)
         self.market_bias_filter = BTCMarketBiasFilter(config=bias_cfg)
-        
+
         # Tracker de ciclos consecutivos para el Seguro de Salida por Tiempo (Safe Time-Stop)
         self.time_stop_tracker: Dict[str, int] = {}
 
@@ -62,24 +62,24 @@ class TradeEngine:
 
         lines = [
             f"# Informe Forense: Agotamiento de Fondos en {symbol}",
-            f"",
+            "",
             f"**Fecha y Hora:** {format_chile_human(now_dt)}  ",
             f"**Sub-Agente:** `{agent_id}`  ",
             f"**Activo:** `{symbol}`  ",
             f"**Inversión Inicial Asignada:** ${base_usd:.2f} USD  ",
             f"**PnL Acumulado Realizado:** ${realized_pnl:.2f} USD  ",
-            f"**Estado en Tabla de Funcionamiento:** 🔴 **OFF (Detenida)**  ",
-            f"",
-            f"---",
-            f"",
-            f"## 1. Resumen de la Desconexión",
+            "**Estado en Tabla de Funcionamiento:** 🔴 **OFF (Detenida)**  ",
+            "",
+            "---",
+            "",
+            "## 1. Resumen de la Desconexión",
             f"El saldo asignado para `{symbol}` ha llegado a **$0.00 USD** (o saldo negativo de ${realized_pnl:.2f} USD) debido a pérdidas acumuladas.",
             f"La celda `({agent_id}, {symbol})` en la Tabla de Funcionamiento ha pasado automáticamente a **OFF**, bloqueando cualquier nueva compra.",
-            f"",
-            f"## 2. Historial de Operaciones del Activo",
-            f"",
-            f"| Trade ID | Lado | Cantidad | Precio Entrada | Precio Salida | PnL (USD) | PnL (%) | Estrategia | Fecha Cierre (Chile) |",
-            f"|---|---|---|---|---|---|---|---|---|"
+            "",
+            "## 2. Historial de Operaciones del Activo",
+            "",
+            "| Trade ID | Lado | Cantidad | Precio Entrada | Precio Salida | PnL (USD) | PnL (%) | Estrategia | Fecha Cierre (Chile) |",
+            "|---|---|---|---|---|---|---|---|---|"
         ]
 
         for t in closed_trades:
@@ -96,11 +96,11 @@ class TradeEngine:
             lines.append(f"| `{tid}` | {side} | {qty:.6f} | ${p_in:,.4f} | ${p_out:,.4f} | ${pnl:.4f} | {pnl_pct:.2f}% | {strat} | {c_at_str} |")
 
         lines.extend([
-            f"",
-            f"---",
-            f"## 3. Acciones Recomendadas",
+            "",
+            "---",
+            "## 3. Acciones Recomendadas",
             f"1. Para reanudar operaciones en `{symbol}`, asigne nuevo capital desde la interfaz o base de datos.",
-            f"2. Audite las condiciones de mercado del par en el dataset histórico de velas `candles`."
+            "2. Audite las condiciones de mercado del par en el dataset histórico de velas `candles`."
         ])
 
         os.makedirs("/home/shifu/documentos-agy", exist_ok=True)
@@ -136,7 +136,7 @@ class TradeEngine:
             signal = self.strategy.generate_signal(df)
             current_price = float(df['close'].iloc[-1])
             await self.portfolio_manager.update_asset_price_async(symbol, current_price)
-            
+
             # 1. Gestionar salidas de posiciones abiertas (TP, SL, Safe Time-Stop)
             close_result = await self.manage_open_trades(symbol, current_price, signal, order_executor, total_capital, agent_id)
             if close_result:
@@ -150,7 +150,7 @@ class TradeEngine:
                 async with DatabaseSession.get_async_session() as session:
                     result = await session.execute(select(Trade).filter(Trade.status == "OPEN"))
                     open_trades = result.scalars().all()
-                    
+
                     # Consultar PnL realizado para esta moneda en este agente
                     pnl_res = await session.execute(
                         select(func.sum(Trade.pnl)).filter(
@@ -160,7 +160,7 @@ class TradeEngine:
                         )
                     )
                     coin_realized_pnl = float(pnl_res.scalar() or 0.0)
-                
+
                 # Validación de Fondo Individual por Moneda ($1.00 USD base)
                 base_coin_usd = 1.0
                 coin_balance = base_coin_usd + coin_realized_pnl
@@ -284,20 +284,20 @@ class TradeEngine:
                     if "Mock" in strat_name:
                         strat_name = "EMACrossover"
                     await self.portfolio_manager.record_open_trade_async(
-                        execution_result, 
+                        execution_result,
                         strategy=strat_name,
                         agent_id=agent_id,
                         dca_step=dca_step
                     )
-                    
+
                     capital_clp = self.clp_converter.convert_usd_to_clp(total_equity)
                     dca_label = f"{signal} (Micro DCA 1/2)" if is_dca_enabled else signal
                     trade_details = {"symbol": symbol, "side": dca_label, "amount": amount, "price": current_price}
-                    
+
                     dca_info = f" [Micro DCA Tramo 1/2: {tranche_1_pct*100:.0f}%]" if is_dca_enabled else ""
                     report_msg = f"Operación ejecutada: {dca_label}{dca_info} de {amount:.4f} {symbol} a {current_price} USD (${order_usd:.2f} USD)"
                     registrar_log("REPORTE", report_msg)
-                    
+
                     self.notifier.send_trade_alert(trade_details, capital_clp)
                     return {'symbol': symbol, 'decision': 'BUY_DCA_1' if is_dca_enabled else signal, 'reason': f"Ejecutado{dca_info} a {current_price} USD (${order_usd:.2f} USD)"}
 
@@ -311,28 +311,29 @@ class TradeEngine:
             self.notifier.send_error_alert(f"Error processing {symbol}:\n{traceback.format_exc()}")
             return {'symbol': symbol, 'decision': 'ERROR', 'reason': str(e)}
 
-    async def manage_open_trades(self, symbol: str, current_price: float, current_signal: str, order_executor, total_capital: float, agent_id: str = "legacy") -> dict:
+    async def manage_open_trades(self, symbol: str, current_price: float, current_signal: str, order_executor, total_capital: float, agent_id: str = "legacy") -> Optional[Dict[str, Any]]:
         async with DatabaseSession.get_async_session() as session:
             result = await session.execute(
                 select(Trade).filter(Trade.symbol == symbol, Trade.status == "OPEN")
             )
             open_trades = result.scalars().all()
-        
-        if not open_trades: return None
-            
+
+        if not open_trades:
+            return None
+
         tp_pct = self.config.risk.default_take_profit_pct
         sl_pct = self.config.risk.max_loss_per_trade_pct
         trading_mode = getattr(self.config.bot, "trading_mode", "trend")
-        
+
         for trade in open_trades:
             should_close = False
             close_reason = ""
             price_entry = float(trade.price_entry)
-            
+
             opened_at = trade.opened_at or datetime.utcnow()
             now = datetime.utcnow()
             duration_minutes = (now - opened_at).total_seconds() / 60.0
-            
+
             if trade.side == "BUY":
                 pnl_pct = (current_price - price_entry) / price_entry if price_entry > 0 else 0.0
 
@@ -341,7 +342,7 @@ class TradeEngine:
                 hard_sl_pct = getattr(ts_cfg, "hard_stop_loss_pct", 0.045) if ts_cfg else 0.045
                 if pnl_pct <= -hard_sl_pct:
                     should_close, close_reason = True, f"Hard Stop Loss Emergencia (-{hard_sl_pct*100:.1f}%)"
-                
+
                 # 2. Take Profit Estándar (Elevado institucional >= +1.50% para superar comisiones)
                 current_tp_pct = tp_pct
                 if trading_mode == "scalper":
@@ -352,7 +353,7 @@ class TradeEngine:
                         current_tp_pct = tp_pct
                     else:
                         current_tp_pct = 0.015 # +1.50% institucional
-                    
+
                 if not should_close and current_price >= price_entry * (1 + current_tp_pct):
                     should_close, close_reason = True, f"Take Profit (+{current_tp_pct*100:.1f}%)"
                     self.time_stop_tracker.pop(trade.trade_id, None)
@@ -367,7 +368,7 @@ class TradeEngine:
                 elif not should_close and trading_mode == "scalper" and ts_cfg and getattr(ts_cfg, "enabled", True):
                     min_duration = getattr(ts_cfg, "min_duration_minutes", 120)
                     consecutive_req = getattr(ts_cfg, "consecutive_cycles_required", 3)
-                    
+
                     if duration_minutes >= min_duration:
                         if pnl_pct < 0:
                             # Posición en pérdida tras superar el tiempo de maduración
@@ -386,26 +387,26 @@ class TradeEngine:
                             if trade.trade_id in self.time_stop_tracker:
                                 log.info(f"[{trade.symbol}] Safe Time-Stop: Rebote detectado (PnL {pnl_pct*100:.2f}%). Seguro reseteado.")
                                 self.time_stop_tracker.pop(trade.trade_id, None)
-                    
+
             if should_close:
                 self.time_stop_tracker.pop(trade.trade_id, None)
                 execution_side = "SELL" if trade.side == "BUY" else "BUY"
                 execution_result = await order_executor.execute_order(
                     symbol=symbol, side=execution_side, amount=float(trade.quantity), order_type="MARKET", price=current_price
                 )
-                
+
                 executed_price = execution_result.get("price", current_price)
                 execution_result["price"] = executed_price
                 execution_result["reason"] = close_reason
                 closed_trade = await self.portfolio_manager.record_close_trade_async(trade.trade_id, execution_result, exit_reason=close_reason)
-                
+
                 pnl_usd = float(closed_trade.pnl) if closed_trade else 0.0
                 pnl_pct = float(closed_trade.pnl_pct) if closed_trade else 0.0
                 fee_usd = float(closed_trade.fee_usd or 0.0) if closed_trade else 0.0
                 pnl_net_usd = float(closed_trade.pnl_net_usd or 0.0) if closed_trade else 0.0
                 pnl_clp = float(closed_trade.pnl_clp or 0.0) if closed_trade else 0.0
                 capital_clp = self.clp_converter.convert_usd_to_clp(total_capital)
-                
+
                 trade_details = {
                     "symbol": symbol,
                     "side": execution_side,
@@ -420,7 +421,7 @@ class TradeEngine:
                 }
                 self.notifier.send_trade_alert(trade_details, capital_clp)
                 registrar_log("REPORTE", f"Operación CERRADA: {execution_side} de {trade.quantity} {symbol} a {executed_price} USD. PnL Bruto: {pnl_usd:.2f}, Fee: {fee_usd:.4f}, PnL Neto: {pnl_net_usd:.2f} USD ({pnl_clp:,.0f} CLP). Razón: {close_reason}")
-                
+
                 # Verificación de agotamiento de fondo tras el cierre
                 try:
                     async with DatabaseSession.get_async_session() as session:
@@ -444,7 +445,7 @@ class TradeEngine:
                             )
                             closed_history = trades_res.scalars().all()
                             report_path = self.generate_coin_loss_report(agent_id, symbol, 1.0, updated_pnl, closed_history)
-                            
+
                             alert_msg = (
                                 f"🔴 <b>MONEDA DETENIDA (ESTADO OFF): {symbol}</b>\n\n"
                                 f"⚠️ El fondo asignado a <code>{symbol}</code> en <b>{agent_id}</b> se ha agotado.\n"

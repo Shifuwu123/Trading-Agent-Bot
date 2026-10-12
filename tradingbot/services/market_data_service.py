@@ -19,14 +19,14 @@ class MarketDataService:
     def __init__(self):
         if self._initialized:
             return
-            
+
         self.subscribers = []
         self._initialized = True
         log.info("MarketDataService initialized (Singleton)")
 
     def subscribe(self, strategy_callback):
         self.subscribers.append(strategy_callback)
-        
+
     async def start_streaming(self):
         log.info("MarketDataService: Starting WebSocket streams... (Placeholder)")
         # Implement ccxt.pro watch_ticker / watch_ohlcv loops here

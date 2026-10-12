@@ -38,7 +38,7 @@ class StorageHealthWatchdog:
         try:
             conn = sqlite3.connect(db_path, timeout=3.0)
             cur = conn.cursor()
-            
+
             # 1. Comprobar existencia de tabla trades
             cur.execute("SELECT count(*) FROM trades LIMIT 1;")
             trades_count = cur.fetchone()[0]

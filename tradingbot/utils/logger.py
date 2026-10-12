@@ -79,14 +79,14 @@ def registrar_log(tipo_registro: str, descripcion: str):
     except Exception:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     row = [timestamp, tipo_registro.upper(), safe_desc]
-    
+
     # Imprimir a consola
     print(f"[{timestamp}] [{tipo_registro.upper()}] {safe_desc}")
-    
+
     # Guardar en log_general siempre
     with open(LOG_GENERAL_PATH, mode='a', newline='', encoding='utf-8') as f:
         csv.writer(f).writerow(row)
-        
+
     # Guardar en archivos específicos
     if tipo_registro.upper() == "ERROR":
         with open(LOG_ERRORES_PATH, mode='a', newline='', encoding='utf-8') as f:
@@ -101,5 +101,7 @@ class LegacyLogger:
     def info(self, msg): registrar_log("INFO", msg)
     def warning(self, msg): registrar_log("WARNING", msg)
     def error(self, msg): registrar_log("ERROR", msg)
+    def critical(self, msg): registrar_log("CRITICAL", msg)
+    def exception(self, msg): registrar_log("ERROR", msg)
 
 log = LegacyLogger()

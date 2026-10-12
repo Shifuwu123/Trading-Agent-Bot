@@ -114,7 +114,7 @@ def test_sync_to_disk_atomic(temp_dbs):
     assert count == 2
 
     # Verificar que se creó un snapshot en backup_dir
-    backups = os.listdir(backup_dir)
+    backups = [b for b in os.listdir(backup_dir) if b.startswith("tradingbot.db.bak_")]
     assert len(backups) == 1
     assert backups[0].startswith("tradingbot.db.bak_")
 

@@ -27,12 +27,12 @@ class CCXTConnector(ExchangeConnector):
     def __init__(self):
         settings = get_settings()
         exchange_id = settings.exchange_id
-        
+
         if not hasattr(ccxt, exchange_id):
             raise ValueError(f"Exchange '{exchange_id}' is not supported by CCXT.")
-            
+
         exchange_class = getattr(ccxt, exchange_id)
-        
+
         is_testnet = bool(settings.exchange_testnet)
         self.cache_key = f"{exchange_id}_{'testnet' if is_testnet else 'live'}"
         timeout_ms = 45000 if is_testnet else 30000
@@ -43,9 +43,9 @@ class CCXTConnector(ExchangeConnector):
             'enableRateLimit': True,
             'timeout': timeout_ms,
         }
-        
+
         self.exchange: ccxt.Exchange = exchange_class(exchange_config)
-        
+
         # Enable testnet/sandbox mode if configured
         if is_testnet:
             try:
@@ -53,7 +53,7 @@ class CCXTConnector(ExchangeConnector):
                 log.info(f"Sandbox mode (testnet) enabled for {exchange_id} (timeout: {timeout_ms}ms)")
             except Exception as e:
                 log.error(f"Could not enable sandbox mode for {exchange_id}: {e}")
-                
+
         # Populate exchange with cached markets if available (avoids 25s HTTP request on load_markets)
         self._apply_cached_markets()
 

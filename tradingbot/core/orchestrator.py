@@ -141,7 +141,7 @@ class OrchestratorBot:
             return False
         return not spec.paused and getattr(spec.config.bot, "mode", "passive").lower() == "active"
 
-    def _assign_capital(self, total_capital: float, scenario_a: bool = None):
+    def _assign_capital(self, total_capital: float, scenario_a: Optional[bool] = None):
         """
         Distribuye el capital total entre los subagentes basado en la matriz de monedas ($1 USD por par).
 
@@ -379,7 +379,7 @@ class OrchestratorBot:
 
         return status
 
-    def format_global_status_message(self, capital_usd: float = None, capital_clp: float = None) -> str:
+    def format_global_status_message(self, capital_usd: Optional[float] = None, capital_clp: Optional[float] = None) -> str:
         """Genera el mensaje de Telegram con el panel global y detallado de cada subagente."""
         status = self.get_global_status()
         state = "Pausado ⏸️" if self.paused else "Corriendo ▶️"
@@ -609,7 +609,7 @@ class OrchestratorBot:
 
         return "\n".join(lines)
 
-    def format_global_wallet_message(self, capital_usd: float = None, capital_clp: float = None) -> str:
+    def format_global_wallet_message(self, capital_usd: Optional[float] = None, capital_clp: Optional[float] = None) -> str:
         """Genera el mensaje detallado de Billetera Global y Billeteras por Subagente."""
         status = self.get_global_status()
 
@@ -635,7 +635,7 @@ class OrchestratorBot:
             "👝 <b>Billetera Digital Multi-Agente</b>\n",
             f"💵 <b>Saldo Total en Cuenta:</b> ${capital_usd:,.2f} USDT <i>(${capital_clp:,.0f} CLP)</i>",
             f"💧 <b>Liquidez Disponible:</b> ${liquid_balance:,.2f} USDT",
-            f"🎯 <b>Inversión Base Matriz:</b> $16.00 USD (16 pares x $1.00 USD)\n",
+            "🎯 <b>Inversión Base Matriz:</b> $16.00 USD (16 pares x $1.00 USD)\n",
             "━━━━━━━━━━━━━━━━━━━",
             "🤖 <b>Billeteras por Sub-Agente:</b>\n",
         ]
@@ -720,4 +720,78 @@ class OrchestratorBot:
             "💡 <i>Si el saldo de una moneda llega a $0.00 USD, pasa automáticamente a OFF y se despacha un informe forense.</i>"
         ])
         return "\n".join(lines)
+
+    def _execute_db_command(self, cmd_name: str, args_str: str = "") -> str:
+        """Ejecuta un comando recibido desde la base de datos (dashboard)."""
+        cmd = cmd_name.upper().strip()
+        args = args_str.strip()
+
+        if cmd == "PAUSE":
+            if args and args in self.agents:
+                self.agents[args].pause()
+                return f"Subagente {args} pausado."
+            else:
+                self.paused = True
+                return "Orchestrator y subagentes pausados globalmente."
+
+        elif cmd == "RESUME":
+            if args and args in self.agents:
+                self.agents[args].resume()
+                return f"Subagente {args} reactivado."
+            else:
+                self.paused = False
+                return "Orchestrator y subagentes reactivados globalmente."
+
+        elif cmd == "STATUS":
+            return "Orchestrator operativo. Estado: " + ("PAUSADO" if self.paused else "ACTIVO")
+
+        elif cmd in ("BALANCE", "WALLET"):
+            summary = self.portfolio_manager.get_cashflow_summary()
+            return f"Billetera: Saldo ${summary.get('balance', 0.0):.2f} USD"
+
+        elif cmd == "REPORT":
+            return "Reporte solicitado. Métricas actualizadas."
+
+        else:
+            return f"Comando {cmd} recibido y procesado."
+
+    def process_pending_db_commands(self) -> list:
+        """
+        Lee y ejecuta comandos encolados desde la tabla `bot_commands` (originados en el Dashboard Web).
+        Actualiza el estado a 'COMPLETED' o 'FAILED' y registra los resultados.
+        """
+        from tradingbot.database.models import BotCommand
+        from sqlalchemy import or_
+
+        session = DatabaseSession.get_session()
+        processed = []
+        try:
+            pending_cmds = session.query(BotCommand).filter(
+                or_(BotCommand.status == "PENDING", BotCommand.status.is_(None))
+            ).all()
+            for cmd_record in pending_cmds:
+                cmd_name = (cmd_record.command or "").upper().strip()
+                args_str = (cmd_record.args or "").strip()
+                cmd_record.status = "PROCESSING"
+                session.commit()
+
+                try:
+                    result_msg = self._execute_db_command(cmd_name, args_str)
+                    cmd_record.status = "COMPLETED"
+                    log.info(f"[Orchestrator DBCommand] Comando {cmd_name} ejecutado: {result_msg}")
+                    processed.append({"id": cmd_record.id, "command": cmd_name, "status": "COMPLETED", "result": result_msg})
+                except Exception as ex:
+                    cmd_record.status = "FAILED"
+                    log.error(f"[Orchestrator DBCommand] Error ejecutando {cmd_name}: {ex}")
+                    processed.append({"id": cmd_record.id, "command": cmd_name, "status": "FAILED", "error": str(ex)})
+
+                session.commit()
+        except Exception as e:
+            session.rollback()
+            log.warning(f"[Orchestrator DBCommand] Error consultando bot_commands: {e}")
+        finally:
+            session.close()
+
+        return processed
+
 

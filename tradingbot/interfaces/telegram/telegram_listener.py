@@ -681,7 +681,8 @@ class TelegramListener:
             await update.message.reply_text("❌ <b>Error:</b> La cantidad debe ser un número positivo.", parse_mode="HTML")
             return
 
-        import time, uuid
+        import time
+        import uuid
         order_key = uuid.uuid4().hex[:8]
         self._pending_orders[order_key] = {
             "symbol": symbol,
@@ -741,7 +742,8 @@ class TelegramListener:
             )
             return
 
-        import time, uuid
+        import time
+        import uuid
         order_key = uuid.uuid4().hex[:8]
         self._pending_orders[order_key] = {
             "symbol": symbol,

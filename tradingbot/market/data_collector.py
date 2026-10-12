@@ -12,7 +12,7 @@ class DataCollector:
     """
     DataCollector fetches market data via the ExchangeConnector and processes it.
     """
-    
+
     def __init__(self, connector: ExchangeConnector):
         self.connector = connector
         log.info("Initialized DataCollector")
@@ -24,29 +24,29 @@ class DataCollector:
         Fetches OHLCV data from the connector and returns a pandas DataFrame.
         """
         log.info(f"Collecting historical data for {symbol} (timeframe: {timeframe})")
-        
+
         try:
             ohlcv = await self.connector.fetch_ohlcv(symbol, timeframe, since, limit)
-            
+
             if not ohlcv:
                 log.warning(f"No OHLCV data found for {symbol}")
                 return pd.DataFrame()
-                
+
             # Create a DataFrame from the raw OHLCV list
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            
+
             # Convert timestamp from milliseconds to a readable datetime format
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            
+
             # Set the timestamp as the DataFrame index
             df.set_index('timestamp', inplace=True)
-            
+
             # Save to dataset for future ML training asynchronously
             await self._save_to_db_async(df, symbol, timeframe)
-            
+
             log.info(f"Successfully collected and processed {len(df)} rows of data for {symbol}")
             return df
-            
+
         except (ccxt.RequestTimeout, ccxt.NetworkError) as e:
             log.warning(f"Conectividad transitoria fallida al obtener velas para {symbol} ({timeframe}): {e}")
             raise
@@ -100,9 +100,9 @@ class DataCollector:
                 Candle.symbol == symbol,
                 Candle.timeframe == timeframe
             ).order_by(Candle.timestamp.desc()).first()
-            
+
             latest_ts = latest_candle.timestamp if latest_candle else None
-            
+
             if latest_ts:
                 df_new = df[df.index > latest_ts].copy()
             else:
@@ -112,7 +112,7 @@ class DataCollector:
                 df_new['timestamp'] = df_new.index.to_pydatetime()
                 df_new['symbol'] = symbol
                 df_new['timeframe'] = timeframe
-                
+
                 records = df_new.to_dict(orient='records')
                 session.bulk_insert_mappings(Candle, records)
                 session.commit()

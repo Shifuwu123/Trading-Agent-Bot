@@ -2,7 +2,7 @@ import yaml
 import os
 from pathlib import Path
 from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List, Optional
 
 class ActiveHoursConfig(BaseModel):
@@ -94,7 +94,7 @@ class EnvSettings(BaseSettings):
     exchange_api_key: str = ""
     exchange_api_secret: str = ""
     exchange_testnet: bool = True
-    
+
     database_url: str = "sqlite:////dev/shm/tradingbot.db"
     active_db_path: str = "/dev/shm/tradingbot.db"
     persistent_db_path: str = "/home/shifu/tredding-agent/tradingbot.db"
@@ -109,16 +109,17 @@ class EnvSettings(BaseSettings):
 
     environment: str = "development"
     paper_trading: bool = True
-    
+
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
-    
+
     base_log_dir: str = str(Path.home() / ".log")
-    
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "ignore"
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
 def load_yaml_config(file_path="config.yaml") -> AppConfig:
     with open(file_path, "r") as f:

@@ -20,17 +20,17 @@ class TradingBot:
     def __init__(self, config_path: str = "config.yaml"):
         self.config: AppConfig = load_yaml_config(config_path)
         self.settings = get_settings()
-        
+
         self.risk_manager = RiskManager(self.config)
         self.strategy = EMACrossoverStrategy()
         self.portfolio_manager = PortfolioManager()
-        
+
         self.notifier = TelegramNotifier()
         self.clp_converter = CLPConverter()
-        
+
         self.scheduler = BackgroundScheduler()
         self.paused = False
-        
+
         self.trade_engine = TradeEngine(
             config=self.config,
             risk_manager=self.risk_manager,
@@ -55,29 +55,29 @@ class TradingBot:
             current_hour = datetime.utcnow().hour
             start_hr = dt_cfg.active_hours_utc.start
             end_hr = dt_cfg.active_hours_utc.end
-            
+
             is_active = False
             if start_hr < end_hr:
                 is_active = start_hr <= current_hour < end_hr
             else:
                 is_active = current_hour >= start_hr or current_hour < end_hr
-                
+
             return dt_cfg.active_timeframe if is_active else dt_cfg.passive_timeframe
-        
+
         return self.config.bot.timeframe
 
     async def run_cycle(self):
         if self.paused:
             log.info("Bot is paused. Skipping cycle.")
             return
-            
+
         log.info("--- Starting async run_cycle ---")
         connector = CCXTConnector()
         data_collector = DataCollector(connector)
         order_executor = OrderExecutor(connector)
         try:
             current_tf = self._get_current_timeframe()
-            
+
             # Anti-Repainting Protection
             if current_tf.endswith('m'):
                 tf_mins = int(current_tf.replace('m', ''))
@@ -87,21 +87,21 @@ class TradingBot:
                     decisions = [{'symbol': s, 'decision': 'HOLD', 'reason': f"Waiting for {current_tf} candle to close"} for s in self.config.bot.trading_pairs]
                     self.portfolio_manager.record_decisions_bulk(decisions)
                     return
-            
+
             # Obtener capital total una vez por ciclo (optimización)
             total_capital = await self.get_current_capital()
-            
+
             # Ejecutar evaluación de símbolos de forma concurrente
             tasks = [self.trade_engine.process_symbol(symbol, current_tf, total_capital, data_collector, order_executor) for symbol in self.config.bot.trading_pairs]
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            
+
             bulk_decisions = []
             for result in results:
                 if isinstance(result, Exception):
                     log.error(f"Unhandled exception in gather: {result}")
                 elif isinstance(result, dict):
                     bulk_decisions.append(result)
-            
+
             if bulk_decisions:
                 self.portfolio_manager.record_decisions_bulk(bulk_decisions)
 
@@ -138,7 +138,7 @@ class TradingBot:
             for cmd in commands:
                 c_name = cmd.command.upper()
                 c_args = cmd.args
-                
+
                 if c_name == 'PAUSE':
                     self.paused = True
                     log.info("DASHBOARD CMD: Bot paused.")
@@ -160,7 +160,7 @@ class TradingBot:
                         except Exception as e:
                             log.error(f"Error persisting mode: {e}")
                         log.info(f"DASHBOARD CMD: Mode changed to {c_args}")
-                
+
                 cmd.status = 'PROCESSED'
             session.commit()
         except Exception as e:
@@ -172,16 +172,16 @@ class TradingBot:
         log.info("Starting TradingBot Scheduler...")
         try:
             self.notifier.send_message("🚀 <b>TradingBot iniciado exitosamente!</b>\n⚙️ El bot ha arrancado y está operando. Evaluando el mercado...\nUsa /status para ver comandos.")
-            
+
             # Iniciar el scheduler principal (cada minuto)
             self.scheduler.add_job(self._run_cycle_sync, 'interval', minutes=1)
-            
+
             # Iniciar el scheduler del Dashboard Commands (cada 5 segundos)
             self.scheduler.add_job(self._process_dashboard_commands, 'interval', seconds=5)
-            
+
             # Correr run_cycle inmediatamente en el hilo actual antes de soltarlo
             self._run_cycle_sync()
-            
+
             self.scheduler.start()
         except Exception as e:
             log.error(f"Critical error in TradingBot start(): {e}")

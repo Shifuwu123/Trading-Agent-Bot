@@ -17,29 +17,50 @@ class OrderExecutor:
         self.paper_trading = self.settings.paper_trading
 
     async def execute_order(
-        self, 
-        symbol: str, 
-        side: str, 
-        amount: float, 
-        order_type: str = "MARKET", 
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        order_type: str = "MARKET",
         price: Optional[float] = None
     ) -> Dict[str, Any]:
         """
         Executes an order. Returns a standardized execution result dictionary.
         """
-        log.info(f"Preparing to execute {side} order for {amount} of {symbol} (Type: {order_type}, Price: {price}, Paper: {self.paper_trading})")
+        # Validaciones defensivas de entrada
+        side_clean = side.upper().strip()
+        if side_clean not in ("BUY", "SELL"):
+            raise ValueError(f"Invalid order side: '{side}'. Must be 'BUY' or 'SELL'.")
+
+        try:
+            amount_float = float(amount)
+        except (ValueError, TypeError):
+            raise ValueError(f"Invalid order amount: {amount}. Must be a valid positive float.")
+
+        if amount_float <= 0 or amount_float != amount_float:  # NaN check
+            raise ValueError(f"Order amount must be strictly positive and finite. Got {amount_float}")
+
+        if price is not None:
+            try:
+                price_float = float(price)
+                if price_float <= 0 or price_float != price_float:
+                    raise ValueError(f"Order price must be strictly positive and finite. Got {price_float}")
+            except (ValueError, TypeError):
+                raise ValueError(f"Invalid order price: {price}.")
+
+        log.info(f"Preparing to execute {side_clean} order for {amount_float} of {symbol} (Type: {order_type}, Price: {price}, Paper: {self.paper_trading})")
 
         if self.paper_trading:
-            return await self._mock_execution(symbol, side, amount, order_type, price)
+            return await self._mock_execution(symbol, side_clean, amount_float, order_type, price)
         else:
-            return await self._real_execution(symbol, side, amount, order_type, price)
+            return await self._real_execution(symbol, side_clean, amount_float, order_type, price)
 
     async def _mock_execution(
-        self, 
-        symbol: str, 
-        side: str, 
-        amount: float, 
-        order_type: str, 
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        order_type: str,
         price: Optional[float]
     ) -> Dict[str, Any]:
         """
@@ -54,7 +75,7 @@ class OrderExecutor:
                 execution_price = ticker.get('last') or ticker.get('close')
             except Exception as e:
                 log.warning(f"Could not fetch live ticker for mock execution: {e}. Trying portfolio fallback.")
-            
+
             if execution_price is None:
                 try:
                     from tradingbot.execution.portfolio_manager import DatabaseSession
@@ -70,11 +91,11 @@ class OrderExecutor:
 
             if execution_price is None:
                 raise ValueError("Cannot mock execution without a valid market price")
-                
+
         fake_id = f"mock_{uuid.uuid4().hex[:8]}"
-        
+
         log.info(f"Mock execution successful: {fake_id} | {side} {amount} {symbol} @ {execution_price}")
-        
+
         return {
             "order_id": fake_id,
             "symbol": symbol,
@@ -88,11 +109,11 @@ class OrderExecutor:
         }
 
     async def _real_execution(
-        self, 
-        symbol: str, 
-        side: str, 
-        amount: float, 
-        order_type: str, 
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        order_type: str,
         price: Optional[float]
     ) -> Dict[str, Any]:
         """
@@ -106,22 +127,30 @@ class OrderExecutor:
                 amount=amount,
                 price=price
             )
-            
+
             # Standardize output assuming ccxt-like format
+            avg_px = result.get("average")
+            price_val = avg_px if avg_px is not None else result.get("price")
+            if price_val is None:
+                price_val = price or 0.0
+
+            raw_amt = result.get("amount")
+            amount_val = raw_amt if raw_amt is not None else amount
+
             exec_result = {
                 "order_id": str(result.get("id")),
                 "symbol": result.get("symbol", symbol),
                 "side": result.get("side", side).upper(),
                 "type": result.get("type", order_type).upper(),
-                "amount": float(result.get("amount", amount)),
-                "price": float(result.get("average", result.get("price", price))),
+                "amount": float(amount_val),
+                "price": float(price_val),
                 "status": result.get("status", "open"),
                 "timestamp": int(result.get("timestamp", int(time.time() * 1000))),
                 "is_paper": False
             }
-            log.info(f"Real execution successful: {exec_result['order_id']} | {side} {amount} {symbol} @ {exec_result['price']}")
+            log.info(f"Real execution successful: {exec_result['order_id']} | {side} {exec_result['amount']} {symbol} @ {exec_result['price']}")
             return exec_result
-            
+
         except Exception as e:
             log.error(f"Error during real order execution: {e}")
             raise

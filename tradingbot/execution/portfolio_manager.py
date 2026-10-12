@@ -42,7 +42,7 @@ class DatabaseSession:
         if cls._engine is None:
             settings = get_settings()
             is_sqlite = "sqlite" in settings.database_url
-            
+
             # Inicialización de almacenamiento en RAM y sync daemon si aplica
             if is_sqlite and "/dev/shm" in settings.database_url:
                 try:
@@ -81,23 +81,15 @@ class DatabaseSession:
 
             Base.metadata.create_all(bind=cls._engine)
 
-            # Migraciones ligeras automáticas para tablas existentes en SQLite
+            # Migraciones versionadas y seguras automáticas para SQLite
             if is_sqlite:
-                with cls._engine.connect() as conn:
-                    for col_sql in [
-                        "ALTER TABLE trades ADD COLUMN dca_step INTEGER DEFAULT 1",
-                        "ALTER TABLE trades ADD COLUMN exit_reason TEXT",
-                        "ALTER TABLE trades ADD COLUMN fee_usd NUMERIC(18, 8) DEFAULT 0.0",
-                        "ALTER TABLE trades ADD COLUMN pnl_net_usd NUMERIC(18, 8) DEFAULT 0.0",
-                        "ALTER TABLE trades ADD COLUMN clp_exchange_rate NUMERIC(18, 8)",
-                        "ALTER TABLE trades ADD COLUMN pnl_clp NUMERIC(18, 8)",
-                        "ALTER TABLE digital_wallet ADD COLUMN reserve_usd NUMERIC(18, 8) DEFAULT 0.0",
-                    ]:
-                        try:
-                            conn.execute(text(col_sql))
-                            conn.commit()
-                        except Exception:
-                            pass
+                try:
+                    from tradingbot.database.migrations.manager import MigrationManager
+                    raw_db_path = settings.database_url.replace("sqlite:///", "")
+                    if raw_db_path and raw_db_path != ":memory:":
+                        MigrationManager(db_path=raw_db_path).apply_all()
+                except Exception as me:
+                    log.warning(f"[DatabaseSession] Error aplicando migraciones: {me}")
             cls._SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=cls._engine)
 
             # Motor asíncrono para operaciones no bloqueantes

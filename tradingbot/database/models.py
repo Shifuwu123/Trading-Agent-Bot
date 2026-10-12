@@ -1,12 +1,13 @@
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, Float, Numeric, Boolean, DateTime, ForeignKey, UniqueConstraint
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import DeclarativeBase, relationship
 
-Base = declarative_base()
+class Base(DeclarativeBase):
+    pass
 
 class Trade(Base):
     __tablename__ = 'trades'
-    
+
     id = Column(Integer, primary_key=True)
     trade_id = Column(String, unique=True, index=True)
     symbol = Column(String, nullable=False)
@@ -36,7 +37,7 @@ class Trade(Base):
 
 class Portfolio(Base):
     __tablename__ = 'portfolio'
-    
+
     id = Column(Integer, primary_key=True)
     wallet_id = Column(Integer, ForeignKey('digital_wallet.id'), nullable=True)
     asset = Column(String, index=True)
@@ -47,17 +48,17 @@ class Portfolio(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_paper = Column(Boolean, default=True)
     agent_id = Column(String, default="legacy", nullable=True)
-    
+
     __table_args__ = (UniqueConstraint('asset', 'is_paper', name='_asset_paper_uc'),)
 class DigitalWallet(Base):
     __tablename__ = 'digital_wallet'
-    
+
     id = Column(Integer, primary_key=True)
     telegram_id = Column(String, index=True)
     balance_usd = Column(Numeric(18, 8), default=50.0)
     reserve_usd = Column(Numeric(18, 8), default=0.0, nullable=True)
     is_paper = Column(Boolean, default=True)
-    
+
     __table_args__ = (UniqueConstraint('telegram_id', 'is_paper', name='_telegram_paper_uc'),)
 
 class Candle(Base):
@@ -66,7 +67,7 @@ class Candle(Base):
     Almacena el histórico silenciosamente en cada ciclo.
     """
     __tablename__ = 'candles'
-    
+
     id = Column(Integer, primary_key=True)
     symbol = Column(String, nullable=False, index=True)
     timeframe = Column(String, nullable=False)
@@ -84,7 +85,7 @@ class DecisionLog(Base):
     Registra las micro-decisiones del bot para análisis estadístico.
     """
     __tablename__ = 'decision_logs'
-    
+
     id = Column(Integer, primary_key=True)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     symbol = Column(String, nullable=False, index=True)
@@ -93,7 +94,7 @@ class DecisionLog(Base):
 
 class CashFlow(Base):
     __tablename__ = 'cash_flow'
-    
+
     id = Column(Integer, primary_key=True)
     telegram_id = Column(String, index=True)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
@@ -104,10 +105,10 @@ class CashFlow(Base):
 
 class BotCommand(Base):
     __tablename__ = 'bot_commands'
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     command = Column(String, nullable=False)
     args = Column(String, nullable=True)
-    status = Column(String, default="PENDING")
+    status = Column(String, default="PENDING", server_default="PENDING")
     timestamp = Column(DateTime, default=datetime.utcnow)
 

@@ -59,6 +59,12 @@ else
     echo "✅ Base de datos en RAM verificada con esquema e historial íntegro."
 fi
 
+echo "🛡️ Ejecutando Quality Gate pre-deploy (build, lint, tests, migrations)..."
+if ! "${BOT_DIR}/scripts/pre_deploy_check.sh"; then
+    echo "❌ Quality Gate fallido. Se aborta el despliegue del bot para proteger la operación."
+    exit 1
+fi
+
 echo "🚀 Iniciando Trading Bot en sesión tmux '${SESSION_NAME}' (Capa RAM activa)..."
 tmux new-session -d -s "${SESSION_NAME}" "bash -c 'cd ${BOT_DIR} && ${VENV_PYTHON} main.py; echo \"[TradingBot finalizado con código \$?]\"; exec bash'"
 

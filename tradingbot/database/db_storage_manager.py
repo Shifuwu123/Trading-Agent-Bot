@@ -118,7 +118,7 @@ class DBStorageManager:
             conn = sqlite3.connect(db_path, timeout=5.0)
             cur = conn.cursor()
             tables = set(r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall())
-            
+
             missing_tables = self.REQUIRED_TABLES - tables
             if missing_tables:
                 log.warning(f"[DBStorage SchemaGuard] Tablas faltantes en {db_path}: {missing_tables}")
@@ -139,34 +139,13 @@ class DBStorageManager:
             return False
 
     def _ensure_schema_migrations(self, db_path: str):
-        """Aplica migraciones ligeras no destructivas para campos fiscales, de comisiones y reserva."""
+        """Aplica migraciones versionadas y seguras utilizando MigrationManager."""
         if not os.path.exists(db_path):
             return
         try:
-            conn = sqlite3.connect(db_path, timeout=5.0)
-            cur = conn.cursor()
-            
-            # 1. Tabla trades
-            trade_cols = set(r[1] for r in cur.execute("PRAGMA table_info(trades);").fetchall())
-            new_trade_cols = [
-                ("fee_usd", "NUMERIC(18, 8) DEFAULT 0.0"),
-                ("pnl_net_usd", "NUMERIC(18, 8) DEFAULT 0.0"),
-                ("clp_exchange_rate", "NUMERIC(18, 8)"),
-                ("pnl_clp", "NUMERIC(18, 8)"),
-            ]
-            for col_name, col_type in new_trade_cols:
-                if col_name not in trade_cols:
-                    log.info(f"[DBStorage Migrations] Añadiendo columna {col_name} a tabla trades en {db_path}")
-                    cur.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type};")
-
-            # 2. Tabla digital_wallet
-            wallet_cols = set(r[1] for r in cur.execute("PRAGMA table_info(digital_wallet);").fetchall())
-            if "reserve_usd" not in wallet_cols:
-                log.info(f"[DBStorage Migrations] Añadiendo columna reserve_usd a tabla digital_wallet en {db_path}")
-                cur.execute("ALTER TABLE digital_wallet ADD COLUMN reserve_usd NUMERIC(18, 8) DEFAULT 0.0;")
-
-            conn.commit()
-            conn.close()
+            from tradingbot.database.migrations.manager import MigrationManager
+            mgr = MigrationManager(db_path=db_path, backup_dir=self.backup_dir)
+            mgr.apply_all()
         except Exception as e:
             log.warning(f"[DBStorage Migrations] Error aplicando migraciones en {db_path}: {e}")
 
@@ -246,11 +225,11 @@ class DBStorageManager:
             return False
 
         if not self.check_db_schema_and_data(self.golden_backup_path):
-            log.error(f"[DBStorage] Golden Backup corrupto o no supera Schema Guard.")
+            log.error("[DBStorage] Golden Backup corrupto o no supera Schema Guard.")
             return False
 
         try:
-            log.info(f"[DBStorage] Auto-sanación: Restaurando RAM y Disco desde Golden Backup...")
+            log.info("[DBStorage] Auto-sanación: Restaurando RAM y Disco desde Golden Backup...")
             self._safe_copy_online(self.golden_backup_path, self.active_db_path)
             self._safe_copy_online(self.golden_backup_path, self.persistent_db_path)
             self._ensure_schema_migrations(self.active_db_path)
