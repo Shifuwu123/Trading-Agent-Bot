@@ -124,13 +124,16 @@ def test_telegram_listener_subagent_keyboard():
     listener = TelegramListener(mock_bot)
     status_kb = listener._build_status_keyboard()
     assert status_kb is not None
-    # 4 original rows + 2 subagent rows = 6 rows
-    assert len(status_kb.inline_keyboard) == 6
+    # 3 original rows + 3 subagent/mode rows + 1 toggle row = 7 rows
+    assert len(status_kb.inline_keyboard) == 7
 
     buttons = [btn for row in status_kb.inline_keyboard for btn in row]
     scalper_btn = next((b for b in buttons if b.callback_data == "agent_view:scalper_t1"), None)
     assert scalper_btn is not None
     assert "Scalper" in scalper_btn.text
+    swing_btn = next((b for b in buttons if b.callback_data == "agent_view:swing_grid"), None)
+    assert swing_btn is not None
+    assert "Swing" in swing_btn.text
 
 
 @pytest.mark.asyncio
@@ -142,9 +145,11 @@ async def test_orchestrator_resume_and_pause_speculative():
         orch._fetch_total_capital = AsyncMock(return_value=50.0)
 
         mock_scalper = MagicMock()
-        mock_scalper.capital_pool_pct = 0.50
+        mock_scalper.capital_pool_pct = 0.35
         mock_momentum = MagicMock()
-        mock_momentum.capital_pool_pct = 0.40
+        mock_momentum.capital_pool_pct = 0.35
+        mock_swing = MagicMock()
+        mock_swing.capital_pool_pct = 0.20
         mock_macro = MagicMock()
         mock_macro.capital_pool_pct = 0.10
         mock_spec = MagicMock()
@@ -163,6 +168,7 @@ async def test_orchestrator_resume_and_pause_speculative():
         orch.agents = {
             "scalper_t1": mock_scalper,
             "momentum_t2": mock_momentum,
+            "swing_grid": mock_swing,
             "macro_btceth": mock_macro,
             "speculative_t3": mock_spec,
         }
@@ -171,9 +177,10 @@ async def test_orchestrator_resume_and_pause_speculative():
         status = await orch.resume_agent("speculative_t3")
         mock_spec.resume.assert_called_once()
         assert status["mode"] == "ACTIVE"
-        # Check Escenario A capital distribution
-        mock_scalper.set_capital.assert_called_with(22.5)  # 45% of 50
-        mock_momentum.set_capital.assert_called_with(17.5) # 35% of 50
+        # Check Escenario A capital distribution (30/30/20/10/10%)
+        mock_scalper.set_capital.assert_called_with(15.0)  # 30% of 50
+        mock_momentum.set_capital.assert_called_with(15.0) # 30% of 50
+        mock_swing.set_capital.assert_called_with(10.0)    # 20% of 50
         mock_spec.set_capital.assert_called_with(5.0)      # 10% of 50
         mock_macro.set_capital.assert_called_with(5.0)     # 10% of 50
 
@@ -182,9 +189,10 @@ async def test_orchestrator_resume_and_pause_speculative():
         p_status = await orch.pause_agent("speculative_t3")
         mock_spec.pause.assert_called_once()
         assert p_status["mode"] == "PASSIVE"
-        # Check Escenario B capital distribution
-        mock_scalper.set_capital.assert_called_with(25.0)  # 50% of 50
-        mock_momentum.set_capital.assert_called_with(20.0) # 40% of 50
+        # Check Escenario B capital distribution (35/35/20/10/0%)
+        mock_scalper.set_capital.assert_called_with(17.5)  # 35% of 50
+        mock_momentum.set_capital.assert_called_with(17.5) # 35% of 50
+        mock_swing.set_capital.assert_called_with(10.0)    # 20% of 50
         mock_spec.set_capital.assert_called_with(0.0)      # 0% of 50
 
 

@@ -72,11 +72,12 @@ risk:
   # Distancia porcentual del Trailing Stop respecto al pico máximo del precio (0.02 = 2%).
   trailing_stop_positive: 0.02
 
-  # Salida por Tiempo Inteligente (Time-Based Stop) con seguro multi-ciclo
+  # Salida por Tiempo Inteligente (Time-Based Stop) con seguro multi-ciclo y Dead Zone
   time_stop:
     enabled: true
     min_duration_minutes: 120
     consecutive_cycles_required: 3
+    dead_zone_pct: 0.0030            # 0.30% de tolerancia: No cerrar si PnL está entre 0.0% y -0.30%
     max_loss_pct: 0.02
     hard_stop_loss_pct: 0.045
     oversold_grace_enabled: true

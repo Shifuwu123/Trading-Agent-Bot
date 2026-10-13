@@ -92,15 +92,22 @@ class TelegramListener:
                     InlineKeyboardButton("🚀 Momentum T2", callback_data="agent_view:momentum_t2"),
                 ],
                 [
+                    InlineKeyboardButton("🌊 Swing/Grid", callback_data="agent_view:swing_grid"),
                     InlineKeyboardButton("🐋 Macro BTC/ETH", callback_data="agent_view:macro_btceth"),
+                ],
+                [
                     InlineKeyboardButton("⚠️ Especulativo T3", callback_data="agent_view:speculative_t3"),
+                    InlineKeyboardButton("⚙️ Modo de Trading", callback_data="nav:modes"),
                 ],
             ])
-
-        keyboard.append([
-            InlineKeyboardButton("⚙️ Modo de Trading", callback_data="nav:modes"),
-            toggle_button,
-        ])
+            keyboard.append([
+                toggle_button,
+            ])
+        else:
+            keyboard.append([
+                InlineKeyboardButton("⚙️ Modo de Trading", callback_data="nav:modes"),
+                toggle_button,
+            ])
         return InlineKeyboardMarkup(keyboard)
 
     def _build_agent_detail_keyboard(self, agent_id: str) -> InlineKeyboardMarkup:
@@ -194,7 +201,10 @@ class TelegramListener:
                 InlineKeyboardButton("🚀 Momentum T2", callback_data="agent_view:momentum_t2"),
             ])
             keyboard.append([
+                InlineKeyboardButton("🌊 Swing/Grid", callback_data="agent_view:swing_grid"),
                 InlineKeyboardButton("🐋 Macro BTC/ETH", callback_data="agent_view:macro_btceth"),
+            ])
+            keyboard.append([
                 InlineKeyboardButton("⚠️ Especulativo T3", callback_data="agent_view:speculative_t3"),
             ])
         keyboard.append([
@@ -502,8 +512,8 @@ class TelegramListener:
             "• <code>/stats [horas]</code>: Estadísticas de decisiones (HOLD, BUY, SELL)\n"
             "• <code>/why_block</code>: Ver últimas 10 operaciones bloqueadas por riesgo\n"
             "• <code>/pause</code> / <code>/resume</code>: Pausar o reanudar el sistema completo\n"
-            "• <code>/status_scalper</code>, <code>/status_momentum</code>, <code>/status_macro</code>, <code>/status_speculative</code>: Detalle por sub-agente\n"
-            "• <code>/pause_&lt;agente&gt;</code> / <code>/resume_&lt;agente&gt;</code>: Pausar o reanudar sub-agente específico\n"
+            "• <code>/status_scalper</code>, <code>/status_momentum</code>, <code>/status_swing</code>, <code>/status_macro</code>, <code>/status_speculative</code>: Detalle por sub-agente\n"
+            "• <code>/pause_&lt;agente&gt;</code> / <code>/resume_&lt;agente&gt;</code>: Pausar o reanudar sub-agente específico (ej: <code>/pause_swing</code>)\n"
             "• <code>/buy &lt;symbol&gt; &lt;cantidad&gt;</code>: Compra manual (con confirmación interactiva)\n"
             "• <code>/sell &lt;symbol&gt; &lt;cantidad&gt;</code>: Venta manual (con confirmación interactiva)\n"
             "• <code>/deposit &lt;monto&gt; [nota]</code>: Registrar depósito en cuenta simulada\n"
@@ -630,6 +640,9 @@ class TelegramListener:
                 "scalper_t1": "scalper_t1",
                 "momentum": "momentum_t2",
                 "momentum_t2": "momentum_t2",
+                "swing": "swing_grid",
+                "grid": "swing_grid",
+                "swing_grid": "swing_grid",
                 "macro": "macro_btceth",
                 "macro_btceth": "macro_btceth",
             }
@@ -652,6 +665,9 @@ class TelegramListener:
                 "scalper_t1": "scalper_t1",
                 "momentum": "momentum_t2",
                 "momentum_t2": "momentum_t2",
+                "swing": "swing_grid",
+                "grid": "swing_grid",
+                "swing_grid": "swing_grid",
                 "macro": "macro_btceth",
                 "macro_btceth": "macro_btceth",
             }
@@ -1162,6 +1178,7 @@ class TelegramListener:
                 BotCommand("resume", "Reanudar sistema multi-agente"),
                 BotCommand("status_scalper", "Estado Scalper (Tier 1)"),
                 BotCommand("status_momentum", "Estado Momentum (Tier 2)"),
+                BotCommand("status_swing", "Estado Swing/Grid (BNB/XRP)"),
                 BotCommand("status_macro", "Estado MacroTrader (BTC/ETH)"),
                 BotCommand("status_speculative", "Estado Speculative (Tier 3)"),
                 BotCommand("monetizar", "Liquidar y cosechar ganancias de un activo"),
@@ -1207,8 +1224,8 @@ class TelegramListener:
         app.add_handler(CommandHandler("hora", self.horarios_command))
 
         # Sub-Agentes Commands
-        for aid in ["scalper_t1", "momentum_t2", "macro_btceth", "speculative_t3"]:
-            alias = aid.replace("_t1", "").replace("_t2", "").replace("_t3", "").replace("_btceth", "")
+        for aid in ["scalper_t1", "momentum_t2", "swing_grid", "macro_btceth", "speculative_t3"]:
+            alias = aid.replace("_t1", "").replace("_t2", "").replace("_t3", "").replace("_btceth", "").replace("_grid", "")
 
             def _make_status_cb(target_id):
                 async def _cb(u, c):
@@ -1232,6 +1249,10 @@ class TelegramListener:
                 app.add_handler(CommandHandler(f"status_{alias}", _make_status_cb(aid)))
                 app.add_handler(CommandHandler(f"pause_{alias}", _make_pause_cb(aid)))
                 app.add_handler(CommandHandler(f"resume_{alias}", _make_resume_cb(aid)))
+            if aid == "swing_grid":
+                app.add_handler(CommandHandler("status_grid", _make_status_cb(aid)))
+                app.add_handler(CommandHandler("pause_grid", _make_pause_cb(aid)))
+                app.add_handler(CommandHandler("resume_grid", _make_resume_cb(aid)))
 
         # Inline Button Callbacks
         app.add_handler(CallbackQueryHandler(self.callback_handler))

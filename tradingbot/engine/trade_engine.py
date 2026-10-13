@@ -148,7 +148,10 @@ class TradeEngine:
 
             async with self.trade_lock:
                 async with DatabaseSession.get_async_session() as session:
-                    result = await session.execute(select(Trade).filter(Trade.status == "OPEN"))
+                    open_trades_query = select(Trade).filter(Trade.status == "OPEN")
+                    if agent_id and agent_id != "legacy":
+                        open_trades_query = open_trades_query.filter(Trade.agent_id == agent_id)
+                    result = await session.execute(open_trades_query)
                     open_trades = result.scalars().all()
 
                     # Consultar PnL realizado para esta moneda en este agente
@@ -313,9 +316,10 @@ class TradeEngine:
 
     async def manage_open_trades(self, symbol: str, current_price: float, current_signal: str, order_executor, total_capital: float, agent_id: str = "legacy") -> Optional[Dict[str, Any]]:
         async with DatabaseSession.get_async_session() as session:
-            result = await session.execute(
-                select(Trade).filter(Trade.symbol == symbol, Trade.status == "OPEN")
-            )
+            stmt = select(Trade).filter(Trade.symbol == symbol, Trade.status == "OPEN")
+            if agent_id and agent_id != "legacy":
+                stmt = stmt.filter(Trade.agent_id == agent_id)
+            result = await session.execute(stmt)
             open_trades = result.scalars().all()
 
         if not open_trades:
@@ -364,24 +368,30 @@ class TradeEngine:
                 elif not should_close and current_signal == "SELL" and trading_mode not in ["target", "scalper"]:
                     should_close, close_reason = True, "Reversión de Estrategia"
 
-                # 4. Salida por Tiempo con Seguro Multi-Ciclo en Scalper (Safe Time-Stop)
+                # 4. Salida por Tiempo con Seguro Multi-Ciclo en Scalper (Safe Time-Stop con Dead Zone)
                 elif not should_close and trading_mode == "scalper" and ts_cfg and getattr(ts_cfg, "enabled", True):
                     min_duration = getattr(ts_cfg, "min_duration_minutes", 120)
                     consecutive_req = getattr(ts_cfg, "consecutive_cycles_required", 3)
+                    dead_zone_pct = getattr(ts_cfg, "dead_zone_pct", 0.0030)
 
                     if duration_minutes >= min_duration:
-                        if pnl_pct < 0:
-                            # Posición en pérdida tras superar el tiempo de maduración
+                        if pnl_pct <= -dead_zone_pct:
+                            # Posición en pérdida real que supera la tolerancia Dead Zone tras el tiempo de maduración
                             c_count = self.time_stop_tracker.get(trade.trade_id, 0) + 1
                             self.time_stop_tracker[trade.trade_id] = c_count
                             log.info(
                                 f"[{trade.symbol}] Safe Time-Stop evaluando trade {trade.trade_id} "
-                                f"({duration_minutes:.0f}m activa): ciclo {c_count}/{consecutive_req} en pérdida ({pnl_pct*100:.2f}%)"
+                                f"({duration_minutes:.0f}m activa): ciclo {c_count}/{consecutive_req} en pérdida ({pnl_pct*100:.2f}% <= -{dead_zone_pct*100:.2f}%)"
                             )
                             if c_count >= consecutive_req:
                                 should_close = True
                                 close_reason = f"Safe Time-Stop ({int(duration_minutes)}m + {c_count}x Confirmado, PnL {pnl_pct*100:.2f}%)"
                                 self.time_stop_tracker.pop(trade.trade_id, None)
+                        elif -dead_zone_pct < pnl_pct < 0:
+                            # Dentro de Dead Zone: micro-pérdida insignificante (-0.01% a -0.29%). No cerrar ni avanzar contador
+                            log.info(
+                                f"[{trade.symbol}] Safe Time-Stop omitido: PnL {pnl_pct*100:.2f}% dentro de Dead Zone (+-{dead_zone_pct*100:.2f}%). Permitiendo maduración."
+                            )
                         else:
                             # Rebote a zona positiva o empate: Reset del seguro para permitir alcanzar Take Profit
                             if trade.trade_id in self.time_stop_tracker:

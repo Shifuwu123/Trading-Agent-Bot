@@ -34,6 +34,7 @@ from tradingbot.core.config import get_settings
 
 from agents.scalper_agent import ScalperAgent
 from agents.momentum_agent import MomentumAgent
+from agents.swing_grid_agent import SwingGridAgent
 from agents.speculative_agent import SpeculativeAgent
 from agents.macro_agent import MacroTraderAgent
 
@@ -43,23 +44,25 @@ class OrchestratorBot:
     Orquestador principal del sistema multi-agente de trading.
 
     Responsabilidades:
-    - Inicializar y configurar los 4 subagentes con su capital asignado
-    - Distribuir el capital total según el Escenario B (sin Tier 3 inicial)
+    - Inicializar y configurar los 5 subagentes con su capital asignado
+    - Distribuir el capital total según el modelo cuantitativo (35/35/20/10/0%)
     - Proveer comandos de control por subagente (start/stop/pause/resume)
     - Exponer el estado global del sistema para el panel de Telegram
     - Manejar el ciclo de vida completo del sistema
 
-    Capital Split (Escenario B — activo):
-        scalper_t1:    50% del capital total
-        momentum_t2:   40% del capital total
-        macro_btceth:  10% del capital total
-        speculative_t3: 0% inicial (PASSIVE, se activa manualmente)
+    Capital Split (5 Subagentes):
+        scalper_t1:    35% del capital total (Alta Volatilidad / Opción B)
+        momentum_t2:   35% del capital total (Narrativas AI / Layer 2)
+        swing_grid:    20% del capital total (BNB / XRP Swing Trading)
+        macro_btceth:  10% del capital total (Tendencia BTC / ETH)
+        speculative_t3: 0% inicial (PASSIVE, activable bajo demanda)
     """
 
     # Rutas de configuración de cada subagente
     AGENT_CONFIGS = {
         "scalper_t1":     "configs/agent_scalper.yaml",
         "momentum_t2":    "configs/agent_momentum.yaml",
+        "swing_grid":     "configs/agent_swing_grid.yaml",
         "speculative_t3": "configs/agent_speculative.yaml",
         "macro_btceth":   "configs/agent_macro.yaml",
     }
@@ -77,12 +80,13 @@ class OrchestratorBot:
         self.portfolio_manager = PortfolioManager()
         self.clp_converter = CLPConverter()
 
-        log.info("[Orchestrator] Inicializando OrchestratorBot (Sistema Multi-Agente v1)")
+        log.info("[Orchestrator] Inicializando OrchestratorBot (Sistema Multi-Agente 5 Subagentes)")
 
         # Inicializar subagentes
         self.agents = {
             "scalper_t1":     ScalperAgent(self.AGENT_CONFIGS["scalper_t1"]),
             "momentum_t2":    MomentumAgent(self.AGENT_CONFIGS["momentum_t2"]),
+            "swing_grid":     SwingGridAgent(self.AGENT_CONFIGS["swing_grid"]),
             "speculative_t3": SpeculativeAgent(self.AGENT_CONFIGS["speculative_t3"]),
             "macro_btceth":   MacroTraderAgent(self.AGENT_CONFIGS["macro_btceth"]),
         }
@@ -156,16 +160,18 @@ class OrchestratorBot:
 
         if scenario_a:
             capital_split = {
-                "scalper_t1":     total_capital * 0.45,
-                "momentum_t2":    total_capital * 0.35,
+                "scalper_t1":     total_capital * 0.30,
+                "momentum_t2":    total_capital * 0.30,
+                "swing_grid":     total_capital * 0.20,
                 "macro_btceth":   total_capital * 0.10,
                 "speculative_t3": total_capital * 0.10,
             }
             scenario_name = "Escenario A (Speculative ACTIVO)"
         else:
             capital_split = {
-                "scalper_t1":     total_capital * 0.50,
-                "momentum_t2":    total_capital * 0.40,
+                "scalper_t1":     total_capital * 0.35,
+                "momentum_t2":    total_capital * 0.35,
+                "swing_grid":     total_capital * 0.20,
                 "macro_btceth":   total_capital * 0.10,
                 "speculative_t3": 0.0,
             }
@@ -179,6 +185,7 @@ class OrchestratorBot:
             f"[Orchestrator] Capital distribuido ({scenario_name}):\n"
             f"  ScalperAgent T1:    ${capital_split.get('scalper_t1', 0):,.2f} USDT\n"
             f"  MomentumAgent T2:   ${capital_split.get('momentum_t2', 0):,.2f} USDT\n"
+            f"  SwingGridAgent:     ${capital_split.get('swing_grid', 0):,.2f} USDT\n"
             f"  SpeculativeAgent T3: ${capital_split.get('speculative_t3', 0):,.2f} USDT\n"
             f"  MacroTrader BTC/ETH: ${capital_split.get('macro_btceth', 0):,.2f} USDT"
         )
@@ -225,15 +232,17 @@ class OrchestratorBot:
         )
         scalper_desc = f"${self.agents['scalper_t1']._assigned_capital:,.2f} ({int(self.agents['scalper_t1'].capital_pool_pct*100)}%)" if 'scalper_t1' in self.agents else ""
         momentum_desc = f"${self.agents['momentum_t2']._assigned_capital:,.2f} ({int(self.agents['momentum_t2'].capital_pool_pct*100)}%)" if 'momentum_t2' in self.agents else ""
+        swing_desc = f"${self.agents['swing_grid']._assigned_capital:,.2f} ({int(self.agents['swing_grid'].capital_pool_pct*100)}%)" if 'swing_grid' in self.agents else ""
         macro_desc = f"${self.agents['macro_btceth']._assigned_capital:,.2f} ({int(self.agents['macro_btceth'].capital_pool_pct*100)}%)" if 'macro_btceth' in self.agents else ""
 
         # Notificación de arranque
         self.notifier.send_message(
-            "🚀 <b>Sistema Multi-Agente iniciado</b>\n\n"
+            "🚀 <b>Sistema Multi-Agente iniciado (5 Subagentes)</b>\n\n"
             f"💰 Capital total: <b>${total_capital:,.2f} USDT</b>\n\n"
             f"📊 <b>Distribución ({scenario_label}):</b>\n"
             f"  • ScalperAgent T1: {scalper_desc}\n"
             f"  • MomentumAgent T2: {momentum_desc}\n"
+            f"  • SwingGridAgent (BNB/XRP): {swing_desc}\n"
             f"  • MacroTrader BTC/ETH: {macro_desc}\n"
             f"  • SpeculativeAgent T3: {spec_desc}\n\n"
             "Use /status para ver el estado global."
@@ -412,6 +421,7 @@ class OrchestratorBot:
         icons = {
             "scalper_t1":     "⚡",
             "momentum_t2":    "🚀",
+            "swing_grid":     "🌊",
             "macro_btceth":   "🐋",
             "speculative_t3": "⚠️",
         }
@@ -513,6 +523,7 @@ class OrchestratorBot:
         icons = {
             "scalper_t1":     "⚡",
             "momentum_t2":    "🚀",
+            "swing_grid":     "🌊",
             "macro_btceth":   "🐋",
             "speculative_t3": "⚠️",
         }
@@ -627,6 +638,7 @@ class OrchestratorBot:
         icons = {
             "scalper_t1":     "⚡",
             "momentum_t2":    "🚀",
+            "swing_grid":     "🌊",
             "macro_btceth":   "🐋",
             "speculative_t3": "⚠️",
         }

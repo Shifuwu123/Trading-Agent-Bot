@@ -1,3 +1,5 @@
+import os
+import sys
 from datetime import datetime
 from decimal import Decimal
 from typing import Dict, Any, Optional, List
@@ -42,6 +44,16 @@ class DatabaseSession:
         if cls._engine is None:
             settings = get_settings()
             is_sqlite = "sqlite" in settings.database_url
+
+            # 🛡️ FAIL-SAFE TEST SHIELD: Protección absoluta de base de datos viva frente a tests
+            if "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules:
+                raw_url = str(settings.database_url)
+                if ("tradingbot.db" in raw_url or "/dev/shm" in raw_url) and "test_" not in raw_url:
+                    raise RuntimeError(
+                        "🛑 FATAL TEST SHIELD: Intento de conexión a la base de datos viva (tradingbot.db) "
+                        "durante la ejecución de pruebas unitarias o de integración (PYTEST detectado). "
+                        "Ejecución abortada inmediatamente para proteger los datos de producción."
+                    )
 
             # Inicialización de almacenamiento en RAM y sync daemon si aplica
             if is_sqlite and "/dev/shm" in settings.database_url:

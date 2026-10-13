@@ -38,6 +38,7 @@ def test_migrations_apply_and_verify_schema(temp_db):
     applied = manager.apply_all()
     assert "001" in applied
     assert "002" in applied
+    assert "003" in applied
 
     # 2. Verificar que las tablas y columnas existen
     conn = sqlite3.connect(db_path)
@@ -71,7 +72,7 @@ def test_migrations_rollback_and_restore(temp_db):
 
     manager.apply_all()
     applied_before = manager.get_applied_versions()
-    assert applied_before == ["001", "002"]
+    assert applied_before == ["001", "002", "003"]
 
     # Insertar un registro de prueba
     conn = sqlite3.connect(db_path)
@@ -80,7 +81,12 @@ def test_migrations_rollback_and_restore(temp_db):
     conn.commit()
     conn.close()
 
-    # Revertir última migración (002)
+    # Revertir última migración (003)
+    rolled_back_003 = manager.rollback_last()
+    assert rolled_back_003 == "003"
+    assert manager.get_applied_versions() == ["001", "002"]
+
+    # Revertir migración 002
     rolled_back = manager.rollback_last()
     assert rolled_back == "002"
     assert manager.get_applied_versions() == ["001"]
@@ -98,10 +104,10 @@ def test_migrations_rollback_and_restore(temp_db):
     assert row[0] == "t1"
     conn.close()
 
-    # Reaplicar 002
+    # Reaplicar
     reapplied = manager.apply_all()
-    assert reapplied == ["002"]
-    assert manager.get_applied_versions() == ["001", "002"]
+    assert reapplied == ["002", "003"]
+    assert manager.get_applied_versions() == ["001", "002", "003"]
 
 
 def test_migrations_safety_snapshot_on_failure(temp_db):
@@ -113,9 +119,9 @@ def test_migrations_safety_snapshot_on_failure(temp_db):
 
     # Crear una migración defectuosa temporal en un directorio ad-hoc
     test_mig_dir = tempfile.mkdtemp()
-    with open(os.path.join(test_mig_dir, "003_bad_migration.py"), "w") as f:
+    with open(os.path.join(test_mig_dir, "004_bad_migration.py"), "w") as f:
         f.write("""
-VERSION = "003"
+VERSION = "004"
 NAME = "bad_migration"
 def up(conn):
     conn.execute("ALTER TABLE trades ADD COLUMN good_col TEXT;")

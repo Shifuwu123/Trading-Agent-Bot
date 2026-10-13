@@ -8,7 +8,7 @@
 agent:
   name: "ScalperAgent_Tier1"
   agent_id: "scalper_t1"
-  capital_pool_pct: 0.45           # 45% del capital total (Escenario A con Tier3)
+  capital_pool_pct: 0.35           # 35% del capital total (5 Subagentes)
 
 bot:
   mode: "active"
@@ -16,35 +16,21 @@ bot:
   timeframe: "1m"
 
   # ----------------------------------------------------------
-  # ✅ OPCIÓN A (SELECCIONADA): Portafolio Equilibrado de Alto Rendimiento
-  #    Mayor resiliencia en mercados laterales. Mezcla anclas de liquidez
-  #    (SOL, BNB, XRP) con activos de momentum (SUI, NEAR, DOGE, FET).
-  #    Recomendación del informe: empezar aquí antes de pasar a Opción B.
+  # 🚀 OPCIÓN B (MIGRACIÓN ACTIVA): Cartera de Alta Volatilidad
+  #    BNB/USDT y XRP/USDT retiradas y transferidas a SwingGridAgent.
+  #    Incorporados activos de alta reactividad intradiaria.
   # ----------------------------------------------------------
   trading_pairs:
-    - "SOL/USDT"           # Pilar de liquidez — alta estabilidad
-    - "BNB/USDT"           # Pilar de liquidez — señales limpias
-    - "XRP/USDT"           # Pilar de liquidez — estabilidad
-    - "SUI/USDT"           # Líder de momentum (rango ~8% diario)
-    - "NEAR/USDT"          # Líder de momentum (rango ~7% diario)
-    - "DOGE/USDT"          # Alta volatilidad + liquidez
-    - "ADA/USDT"           # Ancla de Tier 2 con buena liquidez
-
-  # ----------------------------------------------------------
-  # 🚀 OPCIÓN B (comentada): Scalper Agresivo — activar tras 1 semana
-  #    Win Rate > 55% en paper trading para migrar a esta configuración.
-  # ----------------------------------------------------------
-  # trading_pairs:
-  #   - "SUI/USDT"
-  #   - "NEAR/USDT"
-  #   - "FET/USDT"
-  #   - "STRK/USDT"
-  #   - "TAO/USDT"
-  #   - "WLD/USDT"
-  #   - "DOGE/USDT"
-  #   - "SOL/USDT"
-  #   - "QNT/USDT"
-  #   - "ADA/USDT"
+    - "NEAR/USDT"          # Pilar #1 rentabilidad (Win Rate 66.7%, PnL +$0.068 USD)
+    - "SUI/USDT"           # Líder de momentum (rango ~8% diario, Win Rate 66.7%)
+    - "SOL/USDT"           # Pilar de liquidez premium con spread mínimo
+    - "DOGE/USDT"          # Alta volatilidad intradiaria y volumen constante
+    - "ADA/USDT"           # Rendimiento probado (Win Rate 50%, PnL positivo)
+    - "FET/USDT"           # Narrativa IA, rango diario 12-16%
+    - "TAO/USDT"           # IA descentralizada, alta volatilidad intradiaria
+    - "STRK/USDT"          # Layer 2 de alto beta con movimientos limpios
+    - "WLD/USDT"           # Alta participación retail y fuerte fluctuación
+    - "AVAX/USDT"          # Liquidez de gran capitalización con rango intradiario
 
   dynamic_timeframe:
     enabled: true
@@ -58,7 +44,7 @@ bot:
   fiat_currency: "CLP"
 
 risk:
-  max_open_positions: 8
+  max_open_positions: 10
   max_capital_exposure_pct: 1.00
   reserve_capital_pct: 0.00
   coin_reserve_pct: 0.25
@@ -75,6 +61,7 @@ risk:
     enabled: true
     min_duration_minutes: 120        # Seguro: 120 min de maduración antes de evaluar corte
     consecutive_cycles_required: 3   # Seguro: 3 minutos consecutivos cerrando en pérdida
+    dead_zone_pct: 0.0030            # 0.30% tolerancia: No cerrar si PnL está entre 0.0% y -0.30%
     max_loss_pct: 0.02              # Salida acotada
     hard_stop_loss_pct: 0.045       # Hard Stop de emergencia absoluta (flash crash: -4.5%)
     oversold_grace_enabled: true

@@ -1,0 +1,79 @@
+# ============================================================
+# SubAgent: SWING / GRID TRADING — Tier 2 (Canales y Lateralidad)
+# Monedas: BNB/USDT, XRP/USDT (Transferidas desde Scalper Tier 1)
+# Características: Activos de alta capitalización, rangos estables y
+#                  oscilación predecible en velas de 15m y 1h.
+# Estrategia: Bandas de Bollinger (20, 2.0) + RSI (14)
+# Capital Asignado: 20% del total (5 Subagentes)
+# ============================================================
+agent:
+  name: "SwingGridAgent"
+  agent_id: "swing_grid"
+  capital_pool_pct: 0.20           # 20% del capital total
+
+bot:
+  mode: "active"
+  trading_mode: "target"           # Modo TARGET: solo cierra en beneficios de swing
+  timeframe: "15m"                 # Timeframe operativo base
+
+  trading_pairs:
+    - "BNB/USDT"                   # Rango sólido, alta liquidez institucional
+    - "XRP/USDT"                   # Oscilación de canal delimitada
+
+  dynamic_timeframe:
+    enabled: true
+    active_hours_utc:
+      start: 12
+      end: 22
+    active_timeframe: "15m"
+    passive_timeframe: "1h"
+
+  base_currency: "USDT"
+  fiat_currency: "CLP"
+
+risk:
+  max_open_positions: 2
+  max_capital_exposure_pct: 1.00
+  reserve_capital_pct: 0.00
+  coin_reserve_pct: 0.25
+  max_coin_order_pct: 0.75
+  max_loss_per_trade_pct: 0.03
+  daily_loss_limit_pct: 0.05
+  max_drawdown_pct: 0.15
+  default_take_profit_pct: 0.025   # Take Profit Swing +2.50%
+  trailing_stop: false
+  min_order_usd: 0.10
+
+  time_stop:
+    enabled: false                 # Sin cortes por tiempo prematuro (deja madurar los swings)
+    min_duration_minutes: 2880     # 48 horas de horizonte si se activara
+    consecutive_cycles_required: 5
+    dead_zone_pct: 0.0050
+    max_loss_pct: 0.03
+    hard_stop_loss_pct: 0.045
+    oversold_grace_enabled: true
+
+  market_bias:
+    enabled: false
+
+  micro_dca:
+    enabled: true                  # Compras escalonadas en soporte
+    initial_tranche_pct: 0.5333
+    pullback_tranche_pct: 0.4667
+    pullback_min_pct: 0.010
+    pullback_max_pct: 0.030
+
+  profit_harvest:
+    enabled: true
+    threshold_pct: 0.50
+    threshold_usd: 10.00
+    harvest_ratio: 1.00
+
+strategies:
+  active: "grid_swing"
+  grid_swing:
+    bb_period: 20
+    bb_std: 2.0
+    rsi_period: 14
+    rsi_oversold: 38.0
+    rsi_overbought: 65.0

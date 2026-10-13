@@ -1,7 +1,7 @@
 import yaml
 import os
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List, Optional
 
@@ -29,6 +29,7 @@ class TimeStopConfig(BaseModel):
     enabled: bool = True
     min_duration_minutes: int = 120        # Tiempo mínimo de maduración antes de evaluar salida
     consecutive_cycles_required: int = 3   # Seguro: 3 ciclos consecutivos cerrando en zona de pérdida
+    dead_zone_pct: float = 0.0030          # Tolerancia: no cerrar si PnL está entre 0.0% y -0.30%
     max_loss_pct: float = 0.02             # Pérdida máxima acotada al ejecutar Time-Stop (-2.0%)
     hard_stop_loss_pct: float = 0.045      # Hard Stop de emergencia absoluta (flash crash: -4.5%)
     oversold_grace_enabled: bool = True    # Gracia si detecta rebote o sobreventa temporal
@@ -87,7 +88,7 @@ class AppConfig(BaseModel):
     agent: Optional[AgentMetadataConfig] = None
     bot: BotConfig
     risk: RiskConfig
-    # Se pueden agregar strategies y scheduler después
+    model_config = ConfigDict(extra="allow")
 
 class EnvSettings(BaseSettings):
     exchange_id: str = "binance"
